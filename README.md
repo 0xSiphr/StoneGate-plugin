@@ -7,10 +7,11 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/github/stars/xsiphr/StoneGate-plugin?style=flat&color=yellow" alt="Stars">
-  <img src="https://img.shields.io/badge/version-2.0.4-blueviolet" alt="Version">
-  <img src="https://img.shields.io/badge/license-MIT-green" alt="License">
-  <img src="https://img.shields.io/badge/platform-desktop%20%7C%20mobile-informational" alt="Platform">
+  <img src="https://img.shields.io/github/v/release/xsiphr/StoneGate-plugin?label=Release&color=483699&style=flat-square" alt="Release">
+  <img src="https://img.shields.io/badge/platform-desktop%20%7C%20mobile-informational?style=flat-square" alt="Platform">
+  <img src="https://img.shields.io/github/stars/xsiphr/StoneGate-plugin?style=flat-square&color=EBCB8B" alt="Stars">
+  <img src="https://img.shields.io/badge/version-2.0.4-blueviolet?style=flat-square" alt="Version">
+  <img src="https://img.shields.io/github/downloads/xsiphr/StoneGate-plugin/total?style=flat-square&color=A3BE8C&label=downloads" alt="Downloads">
 </p>
 
 ---
