@@ -6,6 +6,7 @@
   <img src="https://img.shields.io/github/v/release/xsiphr/StoneGate-plugin?label=Release&color=483699&style=flat-square" alt="Release">
   <img src="https://img.shields.io/github/stars/xsiphr/StoneGate-plugin?style=flat-square&color=EBCB8B" alt="Stars">
   <a href="https://obsidian.md/plugins?id=stonegate"><img src="https://img.shields.io/badge/dynamic/json?logo=obsidian&color=483699&label=downloads&query=$[%22stonegate%22].downloads&url=https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugin-stats.json&style=flat-square" alt="Downloads"></a>
+  <img src="https://img.shields.io/github/license/xsiphr/StoneGate-plugin?style=flat-square&color=81A1C1" alt="License">
   <img src="https://img.shields.io/badge/platform-desktop%20%7C%20mobile-informational?style=flat-square" alt="Platform">
 </p>
 
@@ -63,6 +64,7 @@ Generate a one-time recovery code to regain access if you forget your password.
 
 <p align="center">
   <img src="assets/feature-recovery-key-gen.png" width="600" alt="Generate recovery key">
+  <br><br>
   <img src="assets/feature-recovery-code.png" width="600" alt="Recovery code entry">
 </p>
 
@@ -89,10 +91,12 @@ Set a custom lock screen background from a URL or a file in your vault.
 
 <p align="center">
   <img src="assets/config-settings-1.png" width="600" alt="Settings tab 1">
-</p>  
-<p align="center">  
+</p>
+<br>
+<p align="center">
   <img src="assets/config-settings-2.png" width="600" alt="Settings tab 2">
 </p>
+<br>
 <p align="center">
   <img src="assets/config-protect-path.png" width="600" alt="Protect new path with Ghost Mode">
 </p>
@@ -107,6 +111,7 @@ Configure these under **Settings → Hotkeys**:
 
 <p align="center">
   <img src="assets/hotkeys.png" width="600" alt="Hotkeys settings">
+  <br><br>
   <img src="assets/hotkeys-command-palette.png" width="600" alt="Command palette unlock">
 </p>
 
@@ -118,6 +123,10 @@ Configure these under **Settings → Hotkeys**:
 
 ## <img src="assets/bonefire.gif" width="40"> License
 
-MIT — see [LICENSE](LICENSE).
+Distributed under the **MIT License**. See [`LICENSE`](LICENSE) for more information.
 
-Built by [Abdulrahman Agiba | xsiphr](https://github.com/xsiphr).
+---
+
+<p align="center">
+  Created with 🤍 by <b><a href="https://github.com/xsiphr">Abdulrahman Agiba | xsiphr</a></b>
+</p>
