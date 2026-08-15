@@ -63,9 +63,9 @@ Blocks further attempts for a cooldown period after repeated failed passwords.
 Generate a one-time recovery code to regain access if you forget your password.
 
 <p align="center">
-  <img src="assets/feature-recovery-key-gen.png" width="600" alt="Generate recovery key">
-  <br><br>
   <img src="assets/feature-recovery-code.png" width="600" alt="Recovery code entry">
+  <br><br>
+  <img src="assets/feature-recovery-key-gen.png" width="600" alt="Generate recovery key">
 </p>
 
 **Ghost Mode**
