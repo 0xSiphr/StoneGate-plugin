@@ -90,6 +90,8 @@ Set a custom lock screen background from a URL or a file in your vault.
 
 <p align="center">
   <img src="assets/config-settings-1.png" width="600" alt="Settings tab 1">
+</p>  
+<p align="center">  
   <img src="assets/config-settings-2.png" width="600" alt="Settings tab 2">
 </p>
 <p align="center">
