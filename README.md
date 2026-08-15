@@ -3,10 +3,6 @@
 </p>
 
 <p align="center">
-  <strong>Lock screen and vault protection for Obsidian, built on top of your password.</strong>
-</p>
-
-<p align="center">
   <img src="https://img.shields.io/github/v/release/xsiphr/StoneGate-plugin?label=Release&color=483699&style=flat-square" alt="Release">
   <img src="https://img.shields.io/github/stars/xsiphr/StoneGate-plugin?style=flat-square&color=EBCB8B" alt="Stars">
   <img src="https://img.shields.io/badge/version-2.0.4-blueviolet?style=flat-square" alt="Version">
