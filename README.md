@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="assets/StoneGate-logo.png" width="500" alt="StoneGate Logo">
+  <img src="assets/StoneGate-logo.png" width="550" alt="StoneGate Logo">
 </p>
 
 <p align="center">
