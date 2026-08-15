@@ -5,7 +5,6 @@
 <p align="center">
   <img src="https://img.shields.io/github/v/release/xsiphr/StoneGate-plugin?label=Release&color=483699&style=flat-square" alt="Release">
   <img src="https://img.shields.io/github/stars/xsiphr/StoneGate-plugin?style=flat-square&color=EBCB8B" alt="Stars">
-  <img src="https://img.shields.io/badge/version-2.0.4-blueviolet?style=flat-square" alt="Version">
   <a href="https://obsidian.md/plugins?id=stonegate"><img src="https://img.shields.io/badge/dynamic/json?logo=obsidian&color=483699&label=downloads&query=$[%22stonegate%22].downloads&url=https://raw.githubusercontent.com/obsidianmd/obsidian-releases/master/community-plugin-stats.json&style=flat-square" alt="Downloads"></a>
   <img src="https://img.shields.io/badge/platform-desktop%20%7C%20mobile-informational?style=flat-square" alt="Platform">
 </p>
