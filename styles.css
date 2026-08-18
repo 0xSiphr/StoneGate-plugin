@@ -79,39 +79,76 @@ body .nav-files-container .nav-file[data-sg-ghost="true"] {
     align-items: center;
     width: 100%;
     margin-bottom: var(--size-4-4, 16px);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s, 4px);
+    background-color: var(--background-modifier-form-field, var(--background-primary));
+    transition: border-color 0.15s ease;
+}
+
+.sg-input-wrapper:focus-within {
+    border-color: var(--interactive-accent);
 }
 
 .sg-input {
     width: 100%;
-    padding: 12px 52px 12px 12px;
-    /* Increased vertical padding */
+    padding: 12px 44px 12px 12px;
     box-sizing: border-box;
+    border: none;
+    background: transparent;
+    box-shadow: none;
 }
 
+.sg-input:focus {
+    outline: none;
+    box-shadow: none;
+}
+
+.sg-input-wrapper.sg-shake,
 .sg-input.sg-shake {
     animation: sg-shake 0.4s cubic-bezier(.36, .07, .19, .97) both;
     border-color: #e05555;
 }
 
-.sg-eye-toggle {
+button.sg-eye-toggle,
+button.sg-eye-toggle:hover,
+button.sg-eye-toggle:focus,
+button.sg-eye-toggle:focus-visible,
+button.sg-eye-toggle:active,
+.sg-input-wrapper button.sg-eye-toggle,
+.sg-modal-input-container button.sg-eye-toggle {
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
+    -webkit-box-shadow: none !important;
+    -webkit-appearance: none !important;
+    appearance: none !important;
+    background-image: none !important;
+}
+
+button.sg-eye-toggle {
     position: absolute;
-    right: 8px;
+    right: 6px;
     top: 50%;
     transform: translateY(-50%);
-    width: 28px;
-    height: 28px;
+    width: 24px;
+    height: 24px;
+    min-width: 24px;
+    min-height: 24px;
+    max-width: 24px;
+    max-height: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    background: transparent;
-    border: none;
+    background-color: transparent !important;
     cursor: pointer;
-    padding: 0;
-    box-shadow: none;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: var(--radius-s, 4px);
+    line-height: 1;
 }
 
-.sg-eye-toggle:hover {
-    background: transparent;
+button.sg-eye-toggle:hover {
+    background-color: var(--background-modifier-hover, rgba(255, 255, 255, 0.08)) !important;
 }
 
 .sg-eye-toggle svg {
@@ -258,6 +295,35 @@ body .nav-files-container .nav-file[data-sg-ghost="true"] {
     margin-bottom: 20px;
 }
 
+.sg-modal-input-container:has(> .sg-eye-toggle) {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: var(--radius-s, 4px);
+    background-color: var(--background-modifier-form-field, var(--background-primary));
+    transition: border-color 0.15s ease;
+}
+
+.sg-modal-input-container:has(> .sg-eye-toggle):focus-within {
+    border-color: var(--interactive-accent);
+}
+
+.sg-modal-input-container:has(> .sg-eye-toggle) input[type="password"],
+.sg-modal-input-container:has(> .sg-eye-toggle) input[type="text"] {
+    width: 100%;
+    padding: 10px 44px 10px 10px;
+    box-sizing: border-box;
+    border: none;
+    background: transparent;
+    box-shadow: none;
+}
+
+.sg-modal-input-container:has(> .sg-eye-toggle) input:focus {
+    outline: none;
+    box-shadow: none;
+}
+
 .sg-modal-input-container label {
     margin-bottom: 8px;
     font-weight: 500;
@@ -266,8 +332,7 @@ body .nav-files-container .nav-file[data-sg-ghost="true"] {
 
 .sg-modal-input-container input:not([type="checkbox"]) {
     width: 100%;
-    padding: 10px 52px 10px 10px;
-    /* Increased padding */
+    padding: 10px 12px;
     box-sizing: border-box;
 }
 
@@ -441,4 +506,21 @@ body .nav-files-container .nav-file[data-sg-ghost="true"] {
 
 .sg-modal-input-container.sg-small-margin {
     margin-bottom: 8px;
+}
+
+.sg-path-type-icon {
+    display: inline-flex;
+    align-items: center;
+    margin-right: 6px;
+    vertical-align: middle;
+    color: var(--text-muted);
+}
+
+.sg-path-type-icon svg {
+    width: 14px;
+    height: 14px;
+}
+
+.sg-autocomplete-item-active {
+    background: var(--background-modifier-hover);
 }

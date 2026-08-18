@@ -1,6 +1,6 @@
 import { App, FuzzySuggestModal } from "obsidian";
-import { ProtectedPath } from "./types";
-import type StoneGatePlugin from "./main";
+import { ProtectedPath } from "../../types";
+import type StoneGatePlugin from "../../main";
 
 export class UnlockPathModal extends FuzzySuggestModal<ProtectedPath> {
   plugin: StoneGatePlugin;

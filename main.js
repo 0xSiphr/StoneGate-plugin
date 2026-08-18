@@ -28,7 +28,7 @@ __export(main_exports, {
   default: () => StoneGatePlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian9 = require("obsidian");
 
 // src/constants.ts
 var DEFAULT_SETTINGS = {
@@ -64,38 +64,35 @@ var DEFAULT_SETTINGS = {
   unlockMenuPasswordHash: void 0,
   unlockMenuPasswordSalt: void 0,
   unlockMenuPasswordHint: void 0,
-  customBackgroundUrl: ""
+  customBackgroundUrl: "",
+  customBackgroundBlurPx: 10
 };
 
-// src/lock-manager.ts
-var import_obsidian = require("obsidian");
-var LockManager = class {
-  constructor(app, settings, overlay) {
-    // pathId -> timestamp when last unlocked
-    this.unlockedPaths = /* @__PURE__ */ new Map();
-    this.previousFile = null;
+// src/managers/idle-manager.ts
+var IdleManager = class {
+  constructor(app, settings, callbacks) {
     this.idleTimerId = null;
     this.blurTimerId = null;
     this.lastActivityTime = Date.now();
-    this.onStateChangeCallbacks = [];
     this.boundActivityHandler = this.throttleActivity.bind(this);
     this.boundBlurHandler = this.handleWindowBlur.bind(this);
     this.boundFocusHandler = this.handleWindowFocus.bind(this);
     // Used for throttling activity updates (max once per second)
     this.activityUpdatePending = false;
-    this.ghostModeObserver = null;
     this.app = app;
     this.settings = settings;
-    this.overlay = overlay;
-    this.debouncedUpdateGhostMode = (0, import_obsidian.debounce)(this.updateGhostModeDOM.bind(this), 100, true);
+    this.callbacks = callbacks;
     this.setupListeners();
     this.startIdleChecker();
-    this.updateGhostModeStyles();
   }
   updateSettings(settings) {
     this.settings = settings;
-    this.checkTimeouts();
-    this.updateGhostModeStyles();
+  }
+  recordActivity() {
+    this.lastActivityTime = Date.now();
+  }
+  getLastActivityTime() {
+    return this.lastActivityTime;
   }
   setupListeners() {
     activeDocument.addEventListener("mousemove", this.boundActivityHandler);
@@ -116,16 +113,186 @@ var LockManager = class {
   }
   startIdleChecker() {
     const check = () => {
-      this.checkTimeouts();
+      this.callbacks.onIdleLock();
       this.idleTimerId = window.setTimeout(check, 1e4);
     };
     this.idleTimerId = window.setTimeout(check, 1e4);
   }
+  handleWindowBlur() {
+    var _a;
+    if (!this.settings.enabled || !this.settings.lockOnBlur)
+      return;
+    if (this.blurTimerId !== null) {
+      window.clearTimeout(this.blurTimerId);
+    }
+    const gracePeriod = (_a = this.settings.blurGracePeriodSeconds) != null ? _a : 3;
+    if (gracePeriod <= 0) {
+      this.executeBlurLock();
+    } else {
+      this.blurTimerId = window.setTimeout(() => {
+        this.executeBlurLock();
+        this.blurTimerId = null;
+      }, gracePeriod * 1e3);
+    }
+  }
+  handleWindowFocus() {
+    if (this.blurTimerId !== null) {
+      window.clearTimeout(this.blurTimerId);
+      this.blurTimerId = null;
+    }
+  }
+  executeBlurLock() {
+    const currentFile = this.app.workspace.getActiveFile();
+    this.callbacks.onBlurLock(currentFile ? currentFile.path : null);
+  }
+  dispose() {
+    activeDocument.removeEventListener("mousemove", this.boundActivityHandler);
+    activeDocument.removeEventListener("keydown", this.boundActivityHandler);
+    activeDocument.removeEventListener("mousedown", this.boundActivityHandler);
+    activeDocument.removeEventListener("touchstart", this.boundActivityHandler);
+    window.removeEventListener("blur", this.boundBlurHandler);
+    window.removeEventListener("focus", this.boundFocusHandler);
+    if (this.idleTimerId !== null) {
+      window.clearTimeout(this.idleTimerId);
+    }
+    if (this.blurTimerId !== null) {
+      window.clearTimeout(this.blurTimerId);
+    }
+  }
+};
+
+// src/managers/ghost-manager.ts
+var import_obsidian = require("obsidian");
+var GhostManager = class {
+  constructor(settings, isLocked) {
+    this.ghostModeObserver = null;
+    this.settings = settings;
+    this.isLocked = isLocked;
+    this.debouncedUpdateGhostMode = (0, import_obsidian.debounce)(this.updateGhostModeDOM.bind(this), 100, true);
+    this.updateStyles();
+  }
+  updateSettings(settings) {
+    this.settings = settings;
+    this.updateStyles();
+  }
+  updateStyles() {
+    if (!this.settings.enabled) {
+      if (this.ghostModeObserver) {
+        this.ghostModeObserver.disconnect();
+        this.ghostModeObserver = null;
+      }
+      this.clearGhostModeAttributes();
+      return;
+    }
+    if (!this.ghostModeObserver) {
+      this.ghostModeObserver = new MutationObserver(() => {
+        this.debouncedUpdateGhostMode();
+      });
+      this.ghostModeObserver.observe(activeDocument.body, { childList: true, subtree: true });
+    }
+    this.updateGhostModeDOM();
+  }
+  clearGhostModeAttributes() {
+    const els = activeDocument.querySelectorAll("[data-sg-ghost]");
+    els.forEach((el) => el.removeAttribute("data-sg-ghost"));
+  }
+  updateGhostModeDOM() {
+    if (!this.settings.enabled) {
+      this.clearGhostModeAttributes();
+      return;
+    }
+    const lockedPaths = /* @__PURE__ */ new Set();
+    for (const path of this.settings.protectedPaths) {
+      if (path.path === "/" || path.path === "")
+        continue;
+      if (path.enableGhostMode && this.isLocked(path.path)) {
+        lockedPaths.add(path.path);
+      }
+    }
+    const titleElements = activeDocument.querySelectorAll(".nav-folder-title[data-path], .nav-file-title[data-path]");
+    titleElements.forEach((titleEl) => {
+      const path = titleEl.getAttribute("data-path");
+      const parentEl = titleEl.parentElement;
+      if (parentEl && path) {
+        if (lockedPaths.has(path)) {
+          if (parentEl.getAttribute("data-sg-ghost") !== "true") {
+            parentEl.setAttribute("data-sg-ghost", "true");
+          }
+        } else {
+          if (parentEl.hasAttribute("data-sg-ghost")) {
+            parentEl.removeAttribute("data-sg-ghost");
+          }
+        }
+      }
+    });
+  }
+  dispose() {
+    if (this.ghostModeObserver) {
+      this.ghostModeObserver.disconnect();
+      this.ghostModeObserver = null;
+    }
+    this.clearGhostModeAttributes();
+  }
+};
+
+// src/managers/lock-manager.ts
+var LockManager = class {
+  constructor(app, settings, overlay) {
+    // pathId -> timestamp when last unlocked
+    this.unlockedPaths = /* @__PURE__ */ new Map();
+    this.previousFile = null;
+    this.onStateChangeCallbacks = [];
+    this.app = app;
+    this.settings = settings;
+    this.overlay = overlay;
+    this.idleManager = new IdleManager(app, settings, {
+      onIdleLock: () => {
+        this.checkTimeouts();
+      },
+      onBlurLock: (currentFilePath) => {
+        this.lockAll();
+        if (currentFilePath) {
+          this.triggerLock(currentFilePath);
+        } else {
+          const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
+          if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
+            if (!this.overlay.isVisible()) {
+              this.overlay.show(defaultPath, this.previousFile, (success) => {
+                if (success) {
+                  this.handleUnlockSuccess(defaultPath.id);
+                }
+              });
+            }
+          }
+        }
+      }
+    });
+    this.ghostManager = new GhostManager(settings, (path) => this.isLocked(path));
+  }
+  handleUnlockSuccess(pathId) {
+    this.idleManager.recordActivity();
+    this.unlock(pathId);
+    const unlockedPath = this.settings.protectedPaths.find((p) => p.id === pathId);
+    if (unlockedPath && !unlockedPath.passwordHash) {
+      for (const p of this.settings.protectedPaths) {
+        if (p.id !== pathId && !p.passwordHash) {
+          this.unlock(p.id);
+        }
+      }
+    }
+  }
+  updateSettings(settings) {
+    this.settings = settings;
+    this.idleManager.updateSettings(settings);
+    this.ghostManager.updateSettings(settings);
+    this.checkTimeouts();
+  }
   checkTimeouts() {
     const now = Date.now();
+    const lastActivity = this.idleManager.getLastActivityTime();
     let lockOccurred = false;
     for (const path of this.settings.protectedPaths) {
-      const idleTimeMinutes = (now - this.lastActivityTime) / 1e3 / 60;
+      const idleTimeMinutes = (now - lastActivity) / 1e3 / 60;
       if (idleTimeMinutes >= path.timeoutMinutes) {
         if (this.unlockedPaths.has(path.id)) {
           this.unlockedPaths.delete(path.id);
@@ -135,13 +302,13 @@ var LockManager = class {
     }
     if (lockOccurred) {
       this.notifyStateChange(true);
-      this.updateGhostModeStyles();
+      this.ghostManager.updateStyles();
     }
     const currentFile = this.app.workspace.getActiveFile();
     if (currentFile && this.isLocked(currentFile.path)) {
       const matchingPath = this.getMatchingPath(currentFile.path);
       if (matchingPath) {
-        const idleTimeMinutes = (now - this.lastActivityTime) / 1e3 / 60;
+        const idleTimeMinutes = (now - lastActivity) / 1e3 / 60;
         if (idleTimeMinutes >= matchingPath.timeoutMinutes) {
           if (!this.overlay.isVisible()) {
             this.triggerLock(currentFile.path);
@@ -196,7 +363,7 @@ var LockManager = class {
       return;
     this.overlay.show(matchingPath, this.previousFile, (success) => {
       if (success) {
-        this.unlock(matchingPath.id);
+        this.handleUnlockSuccess(matchingPath.id);
       } else {
       }
     });
@@ -209,17 +376,17 @@ var LockManager = class {
       pathObj.lastUnlocked = now;
     }
     this.notifyStateChange(false);
-    this.updateGhostModeStyles();
+    this.ghostManager.updateStyles();
   }
   lock(pathId) {
     this.unlockedPaths.delete(pathId);
     this.notifyStateChange(true);
-    this.updateGhostModeStyles();
+    this.ghostManager.updateStyles();
   }
   lockAll() {
     this.unlockedPaths.clear();
     this.notifyStateChange(true);
-    this.updateGhostModeStyles();
+    this.ghostManager.updateStyles();
   }
   onLockStateChange(callback) {
     this.onStateChangeCallbacks.push(callback);
@@ -232,126 +399,22 @@ var LockManager = class {
   handleFileOpen(file) {
     if (!file)
       return;
-    this.lastActivityTime = Date.now();
+    this.idleManager.recordActivity();
     if (this.isLocked(file.path)) {
       this.triggerLock(file.path);
     }
   }
-  handleWindowBlur() {
-    var _a;
-    if (!this.settings.enabled || !this.settings.lockOnBlur)
-      return;
-    if (this.blurTimerId !== null) {
-      window.clearTimeout(this.blurTimerId);
-    }
-    const gracePeriod = (_a = this.settings.blurGracePeriodSeconds) != null ? _a : 3;
-    if (gracePeriod <= 0) {
-      this.executeBlurLock();
-    } else {
-      this.blurTimerId = window.setTimeout(() => {
-        this.executeBlurLock();
-        this.blurTimerId = null;
-      }, gracePeriod * 1e3);
-    }
-  }
-  handleWindowFocus() {
-    if (this.blurTimerId !== null) {
-      window.clearTimeout(this.blurTimerId);
-      this.blurTimerId = null;
-    }
-  }
-  executeBlurLock() {
-    this.lockAll();
-    const currentFile = this.app.workspace.getActiveFile();
-    if (currentFile) {
-      this.triggerLock(currentFile.path);
-    } else {
-      const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
-      if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
-        if (!this.overlay.isVisible()) {
-          this.overlay.show(defaultPath, this.previousFile, (success) => {
-            if (success) {
-              this.unlock(defaultPath.id);
-            }
-          });
-        }
-      }
-    }
-  }
   updateGhostModeStyles() {
-    if (!this.settings.enabled) {
-      if (this.ghostModeObserver) {
-        this.ghostModeObserver.disconnect();
-        this.ghostModeObserver = null;
-      }
-      this.clearGhostModeAttributes();
-      return;
-    }
-    if (!this.ghostModeObserver) {
-      this.ghostModeObserver = new MutationObserver(() => {
-        this.debouncedUpdateGhostMode();
-      });
-      this.ghostModeObserver.observe(activeDocument.body, { childList: true, subtree: true });
-    }
-    this.updateGhostModeDOM();
-  }
-  clearGhostModeAttributes() {
-    const els = activeDocument.querySelectorAll("[data-sg-ghost]");
-    els.forEach((el) => el.removeAttribute("data-sg-ghost"));
-  }
-  updateGhostModeDOM() {
-    if (!this.settings.enabled) {
-      this.clearGhostModeAttributes();
-      return;
-    }
-    const lockedPaths = /* @__PURE__ */ new Set();
-    for (const path of this.settings.protectedPaths) {
-      if (path.path === "/" || path.path === "")
-        continue;
-      if (path.enableGhostMode && this.isLocked(path.path)) {
-        lockedPaths.add(path.path);
-      }
-    }
-    const titleElements = activeDocument.querySelectorAll(".nav-folder-title[data-path], .nav-file-title[data-path]");
-    titleElements.forEach((titleEl) => {
-      const path = titleEl.getAttribute("data-path");
-      const parentEl = titleEl.parentElement;
-      if (parentEl && path) {
-        if (lockedPaths.has(path)) {
-          if (parentEl.getAttribute("data-sg-ghost") !== "true") {
-            parentEl.setAttribute("data-sg-ghost", "true");
-          }
-        } else {
-          if (parentEl.hasAttribute("data-sg-ghost")) {
-            parentEl.removeAttribute("data-sg-ghost");
-          }
-        }
-      }
-    });
+    this.ghostManager.updateStyles();
   }
   dispose() {
-    activeDocument.removeEventListener("mousemove", this.boundActivityHandler);
-    activeDocument.removeEventListener("keydown", this.boundActivityHandler);
-    activeDocument.removeEventListener("mousedown", this.boundActivityHandler);
-    activeDocument.removeEventListener("touchstart", this.boundActivityHandler);
-    window.removeEventListener("blur", this.boundBlurHandler);
-    window.removeEventListener("focus", this.boundFocusHandler);
-    if (this.idleTimerId !== null) {
-      window.clearTimeout(this.idleTimerId);
-    }
-    if (this.blurTimerId !== null) {
-      window.clearTimeout(this.blurTimerId);
-    }
-    if (this.ghostModeObserver) {
-      this.ghostModeObserver.disconnect();
-      this.ghostModeObserver = null;
-    }
-    this.clearGhostModeAttributes();
+    this.idleManager.dispose();
+    this.ghostManager.dispose();
   }
 };
 
 // src/overlay.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 
 // src/crypto.ts
 function generateSalt() {
@@ -425,464 +488,47 @@ function generateRecoveryCode() {
   return code;
 }
 
-// src/overlay.ts
-var LockOverlay = class {
-  constructor(app, settings, saveSettings) {
-    this.containerEl = null;
-    this.bgLayerEl = null;
-    this.inputEl = null;
-    this.submitBtnEl = null;
-    this.errorEl = null;
-    this.counterEl = null;
-    this.lockoutEl = null;
-    this.recoveryBypassEl = null;
-    this.appNameEl = null;
-    this.titleEl = null;
-    this.hintEl = null;
-    this.currentCallback = null;
-    this.currentPath = null;
-    this.previousFile = null;
-    this.lockoutTimer = null;
-    this.boundHandleKeydown = this.handleKeydown.bind(this);
-    this.boundHandleFocus = this.handleFocus.bind(this);
-    this.observer = null;
-    this.isRecoveryPromptOpen = false;
-    this.app = app;
-    this.settings = settings;
-    this.saveSettings = saveSettings;
-    this.createOverlay();
+// src/ui/modals/recovery-modal.ts
+var import_obsidian2 = require("obsidian");
+var RecoveryCodeDisplayModal = class extends import_obsidian2.Modal {
+  constructor(app, code) {
+    super(app);
+    this.code = code;
   }
-  updateSettings(settings) {
-    this.settings = settings;
-    this.applyBackgroundStyles();
-  }
-  resolveBackgroundUrl(url) {
-    if (!url)
-      return "";
-    url = url.trim();
-    if (/^(https?:\/\/|data:|app:\/\/)/i.test(url)) {
-      return url;
-    }
-    if (url.startsWith("obsidian://")) {
-      try {
-        const parsed = new URL(url);
-        const filePath = parsed.searchParams.get("file") || parsed.searchParams.get("path");
-        if (filePath) {
-          const file2 = this.app.metadataCache.getFirstLinkpathDest(decodeURIComponent(filePath), "") || this.app.vault.getAbstractFileByPath(decodeURIComponent(filePath));
-          if (file2 && file2 instanceof import_obsidian2.TFile) {
-            return this.app.vault.getResourcePath(file2);
-          }
-        }
-      } catch (e) {
-      }
-    }
-    const file = this.app.metadataCache.getFirstLinkpathDest(url, "") || this.app.vault.getAbstractFileByPath(url);
-    if (file && file instanceof import_obsidian2.TFile) {
-      return this.app.vault.getResourcePath(file);
-    }
-    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/i.test(url) || url.startsWith("\\\\");
-    const isPosixAbsolute = url.startsWith("/");
-    if (isWindowsAbsolute || isPosixAbsolute) {
-      let normalizedPath = url.replace(/\\/g, "/");
-      if (normalizedPath.startsWith("/")) {
-        return `app://local${normalizedPath}`;
-      } else {
-        return `app://local/${normalizedPath}`;
-      }
-    }
-    return url;
-  }
-  applyBackgroundStyles() {
-    if (!this.containerEl || !this.bgLayerEl)
-      return;
-    const bgUrlSetting = this.settings.customBackgroundUrl;
-    if (!bgUrlSetting) {
-      this.bgLayerEl.setCssStyles({
-        backgroundImage: "",
-        backgroundSize: "",
-        backgroundPosition: "",
-        filter: "",
-        transform: "",
-        webkitTransform: ""
-      });
-      return;
-    }
-    let resolvedUrl = "";
-    try {
-      resolvedUrl = this.resolveBackgroundUrl(bgUrlSetting);
-    } catch (e) {
-      console.warn("StoneGate: Background url resolution threw error:", e);
-    }
-    console.log("StoneGate: Applying background from:", resolvedUrl);
-    if (resolvedUrl) {
-      this.bgLayerEl.setCssStyles({
-        backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0.65)), url('${resolvedUrl}')`,
-        backgroundSize: "cover",
-        backgroundPosition: "center",
-        filter: "blur(10px)",
-        transform: "scale(1.1)",
-        webkitTransform: "scale(1.1)"
-      });
-    } else {
-      this.bgLayerEl.setCssStyles({
-        backgroundImage: "",
-        backgroundSize: "",
-        backgroundPosition: "",
-        filter: "",
-        transform: "",
-        webkitTransform: ""
-      });
-    }
-  }
-  createOverlay() {
-    this.containerEl = activeDocument.createElement("div");
-    this.containerEl.addClass("sg-overlay-container", "sg-overlay-hidden");
-    this.bgLayerEl = this.containerEl.createDiv("sg-background-layer");
-    const card = this.containerEl.createDiv("sg-overlay-card");
-    this.appNameEl = card.createEl("div", { text: "StoneGate", cls: "sg-app-name" });
-    this.titleEl = card.createEl("h2", { cls: "sg-title" });
-    const inputWrapper = card.createDiv("sg-input-wrapper");
-    this.inputEl = inputWrapper.createEl("input", {
-      type: "password",
-      cls: "sg-input",
-      attr: { placeholder: "Enter password" }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.empty();
+    contentEl.createEl("h2", { text: "\u{1F511} Secure Recovery Code Generated", cls: "sg-modal-title" });
+    const desc = contentEl.createEl("p", {
+      text: "This recovery code acts as a Global Skeleton Key. It can bypass and unlock any locked folder or the vault itself if you forget your password.",
+      cls: "sg-modal-desc"
     });
-    const eyeToggle = inputWrapper.createEl("button", { cls: "sg-eye-toggle" });
-    (0, import_obsidian2.setIcon)(eyeToggle, "eye");
-    eyeToggle.addEventListener("click", () => {
-      if (!this.inputEl)
-        return;
-      const isPassword = this.inputEl.type === "password";
-      this.inputEl.type = isPassword ? "text" : "password";
-      if (isPassword) {
-        (0, import_obsidian2.setIcon)(eyeToggle, "eye-off");
-      } else {
-        (0, import_obsidian2.setIcon)(eyeToggle, "eye");
-      }
+    desc.addClass("sg-display-desc");
+    const warningBox = contentEl.createDiv("sg-warning-box sg-display-warning-box");
+    warningBox.createEl("strong", { text: "\u26A0\uFE0F IMPORTANT WARNING:", cls: "sg-display-warning-title" });
+    warningBox.createEl("span", {
+      text: "Write this code down or save it in a secure password manager. For security reasons, the code is hashed before saving, and it CANNOT be shown or recovered again once you close this window.",
+      cls: "sg-display-warning-text"
     });
-    this.hintEl = card.createDiv("sg-hint");
-    this.submitBtnEl = card.createEl("button", {
-      text: "Unlock",
-      cls: "mod-cta sg-submit-btn"
-    });
-    this.errorEl = card.createDiv("sg-error");
-    this.counterEl = card.createDiv("sg-counter");
-    this.lockoutEl = card.createDiv("sg-lockout");
-    this.recoveryBypassEl = card.createDiv("sg-recovery-bypass");
-    this.recoveryBypassEl.hide();
-    const recoveryLink = this.recoveryBypassEl.createEl("a", {
-      text: "Use Recovery Code",
-      cls: "sg-recovery-link"
-    });
-    recoveryLink.addEventListener("click", (e) => {
-      e.preventDefault();
-      this.openRecoveryBypassModal();
-    });
-    this.submitBtnEl.addEventListener("click", () => {
-      void this.submit();
-    });
-    this.containerEl.addEventListener("keydown", (e) => {
-      e.stopPropagation();
-    });
-    activeDocument.body.appendChild(this.containerEl);
-    this.observer = new MutationObserver((mutations) => {
-      mutations.forEach((mutation) => {
-        if (mutation.type === "childList") {
-          const removedNodes = Array.from(mutation.removedNodes);
-          if (this.containerEl && removedNodes.includes(this.containerEl)) {
-            activeDocument.body.appendChild(this.containerEl);
-          }
-        }
-      });
-    });
-    this.observer.observe(activeDocument.body, { childList: true });
-  }
-  handleKeydown(e) {
-    if (!this.containerEl || this.containerEl.hasClass("sg-overlay-hidden"))
-      return;
-    const isRecoveryModalOpen = !!activeDocument.querySelector(".sg-recovery-modal-container");
-    const recoveryModal = activeDocument.querySelector(".sg-recovery-modal-container");
-    const recoveryInput = recoveryModal == null ? void 0 : recoveryModal.querySelector("input");
-    const activeEl = activeDocument.activeElement;
-    const isFocusOnOurInput = activeEl === this.inputEl || recoveryInput && activeEl === recoveryInput;
-    const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
-    if (hasModifier) {
-      const keyLower = e.key.toLowerCase();
-      const isEditingShortcut = ["a", "c", "v", "x", "z", "y"].includes(keyLower);
-      if (isFocusOnOurInput && isEditingShortcut) {
-        return;
-      }
-      e.stopPropagation();
-      e.preventDefault();
-      return;
-    }
-    if (!isFocusOnOurInput) {
-      e.stopPropagation();
-      e.preventDefault();
-      if (isRecoveryModalOpen && recoveryInput) {
-        recoveryInput.focus();
-      } else if (this.inputEl) {
-        const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
-        if (!isLockedOut) {
-          this.inputEl.focus();
-        }
-      }
-      return;
-    }
-    if (e.key === "Enter") {
-      if (isRecoveryModalOpen) {
-        return;
-      }
-      e.stopPropagation();
-      e.preventDefault();
-      void this.submit();
-      return;
-    }
-    if (e.key === "Escape") {
-      e.stopPropagation();
-      e.preventDefault();
-      return;
-    }
-  }
-  handleFocus(e) {
-    if (!this.isVisible())
-      return;
-    const isRecoveryModalOpen = !!activeDocument.querySelector(".sg-recovery-modal-container");
-    const recoveryModal = activeDocument.querySelector(".sg-recovery-modal-container");
-    const recoveryInput = recoveryModal == null ? void 0 : recoveryModal.querySelector("input");
-    if (isRecoveryModalOpen && recoveryInput) {
-      if (e.target !== recoveryInput) {
-        e.stopPropagation();
-        recoveryInput.focus();
-      }
-    } else if (this.inputEl && e.target !== this.inputEl) {
-      const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
-      if (!isLockedOut) {
-        e.stopPropagation();
-        this.inputEl.focus();
-      }
-    }
-  }
-  show(path, previousFile, callback) {
-    if (!this.containerEl)
-      return;
-    this.currentPath = path;
-    this.previousFile = previousFile;
-    this.currentCallback = callback;
-    if (this.settings.showStoneGateTitle) {
-      this.appNameEl.show();
-      this.appNameEl.textContent = this.settings.customTitle || "StoneGate";
-    } else {
-      this.appNameEl.hide();
-    }
-    this.titleEl.textContent = `${path.label || path.path || "Vault"}`;
-    let hintText = "";
-    if (path.showHint && path.passwordHint) {
-      hintText = path.passwordHint;
-    } else if (!path.passwordHash && this.settings.showMasterHint && this.settings.passwordHint) {
-      hintText = this.settings.passwordHint;
-    }
-    this.hintEl.textContent = hintText;
-    this.containerEl.removeClass("sg-overlay-hidden");
-    this.containerEl.removeClass("sg-overlay-fade-out");
-    this.containerEl.addClass("sg-overlay-fade-in");
-    const workspace = activeDocument.body.querySelector(".workspace");
-    if (workspace)
-      workspace.setCssStyles({ pointerEvents: "none" });
-    const modals = activeDocument.querySelectorAll(".modal-container");
-    modals.forEach((modal) => {
-      const htmlModal = modal;
-      if (htmlModal.style.display !== "none") {
-        htmlModal.setAttribute("data-sg-original-display", htmlModal.style.display || "block");
-        htmlModal.setCssStyles({ display: "none" });
-      }
-    });
-    window.addEventListener("keydown", this.boundHandleKeydown, { capture: true });
-    activeDocument.addEventListener("focus", this.boundHandleFocus, true);
-    if (this.app.workspace.layoutReady) {
-      this.applyBackgroundStyles();
-    } else {
-      this.app.workspace.onLayoutReady(() => {
-        this.applyBackgroundStyles();
-      });
-    }
-    if (this.inputEl) {
-      this.inputEl.value = "";
-      this.errorEl.textContent = "";
-      this.updateLockoutUI();
-      if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
-        this.startLockoutTimer();
-      } else {
-        window.setTimeout(() => {
-          var _a;
-          return (_a = this.inputEl) == null ? void 0 : _a.focus();
-        }, 50);
-      }
-    }
-  }
-  isVisible() {
-    return !!this.containerEl && !this.containerEl.hasClass("sg-overlay-hidden");
-  }
-  hide() {
-    if (!this.containerEl)
-      return;
-    this.containerEl.removeClass("sg-overlay-fade-in");
-    this.containerEl.addClass("sg-overlay-fade-out");
-    const modals = activeDocument.querySelectorAll(".modal-container");
-    modals.forEach((modal) => {
-      const htmlModal = modal;
-      const originalDisplay = htmlModal.getAttribute("data-sg-original-display");
-      if (originalDisplay) {
-        htmlModal.setCssStyles({ display: originalDisplay === "block" ? "" : originalDisplay });
-        htmlModal.removeAttribute("data-sg-original-display");
-      }
-    });
-    window.setTimeout(() => {
-      if (this.containerEl) {
-        this.containerEl.addClass("sg-overlay-hidden");
-      }
-      const workspace = activeDocument.body.querySelector(".workspace");
-      if (workspace)
-        workspace.setCssStyles({ pointerEvents: "" });
-      window.removeEventListener("keydown", this.boundHandleKeydown, { capture: true });
-      activeDocument.removeEventListener("focus", this.boundHandleFocus, true);
-    }, 300);
-  }
-  async handleSuccessfulUnlock() {
-    if (this.settings.intruderAlert && this.settings.totalIntruderAttempts > 0) {
-      new import_obsidian2.Notice(
-        `\u{1F6A8} Security Alert: ${this.settings.totalIntruderAttempts} failed unlock attempt(s) detected.`,
-        1e4
-      );
-    }
-    this.settings.failedAttempts = 0;
-    this.settings.totalIntruderAttempts = 0;
-    this.settings.lockoutUntil = 0;
-    await this.saveSettings();
-    this.updateLockoutUI();
-    this.hide();
-    if (this.currentCallback)
-      this.currentCallback(true);
-  }
-  async submit() {
-    var _a, _b;
-    const hash = ((_a = this.currentPath) == null ? void 0 : _a.passwordHash) || this.settings.passwordHash;
-    const salt = ((_b = this.currentPath) == null ? void 0 : _b.passwordSalt) || this.settings.passwordSalt;
-    if (!this.inputEl || !hash || !salt) {
-      this.hide();
-      if (this.currentCallback)
-        this.currentCallback(true);
-      return;
-    }
-    if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
-      return;
-    }
-    const guess = this.inputEl.value;
-    this.inputEl.value = "";
-    let isMatch = await verifyPassword(guess, hash, salt);
-    if (!isMatch && this.settings.recoveryCodeHash && this.settings.recoveryCodeSalt) {
-      const upperGuess = guess.trim().toUpperCase();
-      isMatch = await verifyPassword(upperGuess, this.settings.recoveryCodeHash, this.settings.recoveryCodeSalt);
-      if (isMatch) {
-        new import_obsidian2.Notice("\u{1F513} Unlocked using Recovery Code (Global Skeleton Key).", 5e3);
-      }
-    }
-    if (isMatch) {
-      await this.handleSuccessfulUnlock();
-    } else {
-      this.settings.failedAttempts++;
-      this.settings.totalIntruderAttempts++;
-      this.errorEl.textContent = "Incorrect password";
-      this.inputEl.classList.remove("sg-shake");
-      void this.inputEl.offsetWidth;
-      this.inputEl.classList.add("sg-shake");
-      if (this.settings.maxFailedAttempts > 0 && this.settings.failedAttempts >= this.settings.maxFailedAttempts) {
-        this.settings.lockoutUntil = Date.now() + this.settings.lockoutDurationSeconds * 1e3;
-        this.settings.failedAttempts = 0;
-        await this.saveSettings();
-        this.updateLockoutUI();
-        this.startLockoutTimer();
-      } else {
-        await this.saveSettings();
-        this.updateLockoutUI();
-      }
-    }
-  }
-  openRecoveryBypassModal() {
-    if (this.isRecoveryPromptOpen)
-      return;
-    if (!this.settings.recoveryCodeHash || !this.settings.recoveryCodeSalt) {
-      new import_obsidian2.Notice("No Recovery Code is configured. Set one up in StoneGate settings.", 6e3);
-      return;
-    }
-    this.isRecoveryPromptOpen = true;
-    new RecoveryBypassModal(this.app, this.settings, (verified) => {
+    const codeContainer = contentEl.createDiv("sg-recovery-code-container sg-display-code-container");
+    codeContainer.createEl("div", { text: this.code, cls: "sg-display-code-el" });
+    const buttonRow = contentEl.createDiv("sg-button-row sg-display-button-row");
+    const copyBtn = buttonRow.createEl("button", { text: "Copy Code", cls: "mod-cta" });
+    copyBtn.addEventListener("click", () => {
       void (async () => {
-        if (verified) {
-          new import_obsidian2.Notice("\u{1F513} Lockout bypassed using Recovery Code.", 5e3);
-          await this.handleSuccessfulUnlock();
-        }
+        await navigator.clipboard.writeText(this.code);
+        new import_obsidian2.Notice("Recovery code copied to clipboard!");
+        copyBtn.setText("Copied!");
+        window.setTimeout(() => copyBtn.setText("Copy Code"), 2e3);
       })();
-    }, () => {
-      this.isRecoveryPromptOpen = false;
-    }).open();
+    });
+    const closeBtn = buttonRow.createEl("button", { text: "Done / I Saved It" });
+    closeBtn.addEventListener("click", () => {
+      this.close();
+    });
   }
-  updateLockoutUI() {
-    const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
-    if (isLockedOut) {
-      this.inputEl.disabled = true;
-      this.submitBtnEl.disabled = true;
-      this.errorEl.textContent = "";
-      this.counterEl.textContent = "";
-      const secondsLeft = Math.ceil((this.settings.lockoutUntil - Date.now()) / 1e3);
-      this.lockoutEl.textContent = `Locked out for ${secondsLeft} seconds`;
-      if (this.settings.recoveryCodeHash) {
-        this.recoveryBypassEl.show();
-      }
-    } else {
-      if (this.settings.lockoutUntil !== 0) {
-        this.settings.lockoutUntil = 0;
-        void this.saveSettings().catch((err) => console.error("StoneGate: failed to save lockout settings", err));
-      }
-      this.inputEl.disabled = false;
-      this.submitBtnEl.disabled = false;
-      this.lockoutEl.textContent = "";
-      this.recoveryBypassEl.hide();
-      if (this.settings.maxFailedAttempts > 0 && this.settings.failedAttempts > 0) {
-        this.counterEl.textContent = `${this.settings.failedAttempts} / ${this.settings.maxFailedAttempts} attempts`;
-      } else {
-        this.counterEl.textContent = "";
-      }
-    }
-  }
-  startLockoutTimer() {
-    if (this.lockoutTimer !== null) {
-      window.clearInterval(this.lockoutTimer);
-    }
-    this.lockoutTimer = window.setInterval(() => {
-      if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
-        this.updateLockoutUI();
-      } else {
-        window.clearInterval(this.lockoutTimer);
-        this.lockoutTimer = null;
-        this.updateLockoutUI();
-        if (this.inputEl && !this.containerEl.hasClass("sg-overlay-hidden")) {
-          this.inputEl.focus();
-        }
-      }
-    }, 1e3);
-  }
-  dispose() {
-    if (this.observer) {
-      this.observer.disconnect();
-    }
-    if (this.lockoutTimer !== null) {
-      window.clearInterval(this.lockoutTimer);
-    }
-    window.removeEventListener("keydown", this.boundHandleKeydown, { capture: true });
-    if (this.containerEl && this.containerEl.parentNode) {
-      this.containerEl.parentNode.removeChild(this.containerEl);
-    }
+  onClose() {
+    this.contentEl.empty();
   }
 };
 var RecoveryBypassModal = class extends import_obsidian2.Modal {
@@ -977,364 +623,525 @@ var RecoveryBypassModal = class extends import_obsidian2.Modal {
   }
 };
 
-// src/settings.ts
-var import_obsidian3 = require("obsidian");
-var StoneGateSettingTab = class extends import_obsidian3.PluginSettingTab {
-  constructor(app, plugin) {
-    super(app, plugin);
-    this.plugin = plugin;
+// src/overlay.ts
+var LockOverlay = class {
+  constructor(app, settings, saveSettings) {
+    this.containerEl = null;
+    this.bgLayerEl = null;
+    this.inputEl = null;
+    this.submitBtnEl = null;
+    this.errorEl = null;
+    this.counterEl = null;
+    this.lockoutEl = null;
+    this.recoveryBypassEl = null;
+    this.appNameEl = null;
+    this.titleEl = null;
+    this.hintEl = null;
+    this.currentCallback = null;
+    this.currentPath = null;
+    this.previousFile = null;
+    this.lockoutTimer = null;
+    this.boundHandleKeydown = this.handleKeydown.bind(this);
+    this.boundHandleFocus = this.handleFocus.bind(this);
+    this.boundHandleWindowFocus = this.handleWindowFocusReturn.bind(this);
+    this.observer = null;
+    this.isRecoveryPromptOpen = false;
+    this.lockScope = null;
+    this.scopeActive = false;
+    this.app = app;
+    this.settings = settings;
+    this.saveSettings = saveSettings;
+    this.createOverlay();
   }
-  display() {
-    const { containerEl } = this;
-    containerEl.empty();
-    new import_obsidian3.Setting(containerEl).setName("Core").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Enable StoneGate").setDesc("Turn on lock screen protection").addToggle((toggle) => {
-      let isSyncing = false;
-      toggle.setValue(this.plugin.settings.enabled).onChange((value) => {
-        void (async () => {
-          if (isSyncing)
-            return;
-          try {
-            if (value) {
-              if (!this.plugin.settings.passwordHash) {
-                isSyncing = true;
-                toggle.setValue(false);
-                isSyncing = false;
-                new PasswordModal(this.app, this.plugin, void 0, void 0, "Master Password", (success, hash, salt) => {
-                  void (async () => {
-                    try {
-                      if (success && hash && salt) {
-                        this.plugin.settings.passwordHash = hash;
-                        this.plugin.settings.passwordSalt = salt;
-                        this.plugin.settings.enabled = true;
-                        await this.plugin.saveSettings();
-                        this.display();
-                      } else {
-                        isSyncing = true;
-                        toggle.setValue(false);
-                        isSyncing = false;
-                      }
-                    } catch (e) {
-                      console.error("Password modal callback error:", e);
-                    }
-                  })();
-                }).open();
-              } else {
-                this.plugin.settings.enabled = true;
-                await this.plugin.saveSettings();
-              }
-            } else {
-              isSyncing = true;
-              toggle.setValue(true);
-              isSyncing = false;
-              new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success) => {
-                void (async () => {
-                  try {
-                    if (success) {
-                      this.plugin.settings.enabled = false;
-                      await this.plugin.saveSettings();
-                      this.plugin.lockManager.lockAll();
-                      this.display();
-                    } else {
-                      isSyncing = true;
-                      toggle.setValue(true);
-                      isSyncing = false;
-                    }
-                  } catch (e) {
-                    console.error("Confirm password modal callback error:", e);
-                  }
-                })();
-              }).open();
-            }
-          } catch (e) {
-            console.error("Failed to toggle StoneGate:", e);
-            isSyncing = true;
-            toggle.setValue(!value);
-            isSyncing = false;
+  handleWindowFocusReturn() {
+    if (!this.isVisible())
+      return;
+    const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+    if (isLockedOut)
+      return;
+    window.setTimeout(() => {
+      if (this.isVisible() && this.inputEl) {
+        this.inputEl.focus();
+      }
+    }, 50);
+  }
+  updateSettings(settings) {
+    this.settings = settings;
+    this.applyBackgroundStyles();
+  }
+  resolveBackgroundUrl(url) {
+    if (!url)
+      return "";
+    url = url.trim();
+    if (/^(https?:\/\/|data:|app:\/\/)/i.test(url)) {
+      return url;
+    }
+    if (url.startsWith("obsidian://")) {
+      try {
+        const parsed = new URL(url);
+        const filePath = parsed.searchParams.get("file") || parsed.searchParams.get("path");
+        if (filePath) {
+          const file2 = this.app.metadataCache.getFirstLinkpathDest(decodeURIComponent(filePath), "") || this.app.vault.getAbstractFileByPath(decodeURIComponent(filePath));
+          if (file2 && file2 instanceof import_obsidian3.TFile) {
+            return this.app.vault.getResourcePath(file2);
           }
-        })();
+        }
+      } catch (e) {
+      }
+    }
+    const file = this.app.metadataCache.getFirstLinkpathDest(url, "") || this.app.vault.getAbstractFileByPath(url);
+    if (file && file instanceof import_obsidian3.TFile) {
+      return this.app.vault.getResourcePath(file);
+    }
+    const isWindowsAbsolute = /^[a-zA-Z]:[\\/]/i.test(url) || url.startsWith("\\\\");
+    const isPosixAbsolute = url.startsWith("/");
+    if (isWindowsAbsolute || isPosixAbsolute) {
+      let normalizedPath = url.replace(/\\/g, "/");
+      if (normalizedPath.startsWith("/")) {
+        return `app://local${normalizedPath}`;
+      } else {
+        return `app://local/${normalizedPath}`;
+      }
+    }
+    return url;
+  }
+  applyBackgroundStyles() {
+    var _a;
+    if (!this.containerEl || !this.bgLayerEl)
+      return;
+    const bgUrlSetting = this.settings.customBackgroundUrl;
+    if (!bgUrlSetting) {
+      this.bgLayerEl.setCssStyles({
+        backgroundImage: "",
+        backgroundSize: "",
+        backgroundPosition: "",
+        filter: "",
+        transform: "",
+        webkitTransform: ""
+      });
+      return;
+    }
+    let resolvedUrl = "";
+    try {
+      resolvedUrl = this.resolveBackgroundUrl(bgUrlSetting);
+    } catch (e) {
+      console.warn("StoneGate: Background url resolution threw error:", e);
+    }
+    if (resolvedUrl) {
+      const blurPx = Math.min(10, Math.max(2, (_a = this.settings.customBackgroundBlurPx) != null ? _a : 10));
+      this.bgLayerEl.setCssStyles({
+        backgroundImage: `linear-gradient(rgba(0, 0, 0, 0.65), rgba(0, 0, 0, 0.65)), url('${resolvedUrl}')`,
+        backgroundSize: "cover",
+        backgroundPosition: "center",
+        filter: `blur(${blurPx}px)`,
+        transform: "scale(1.1)",
+        webkitTransform: "scale(1.1)"
+      });
+    } else {
+      this.bgLayerEl.setCssStyles({
+        backgroundImage: "",
+        backgroundSize: "",
+        backgroundPosition: "",
+        filter: "",
+        transform: "",
+        webkitTransform: ""
+      });
+    }
+  }
+  createOverlay() {
+    this.containerEl = activeDocument.createElement("div");
+    this.containerEl.addClass("sg-overlay-container", "sg-overlay-hidden");
+    this.bgLayerEl = this.containerEl.createDiv("sg-background-layer");
+    const card = this.containerEl.createDiv("sg-overlay-card");
+    this.appNameEl = card.createEl("div", { text: "StoneGate", cls: "sg-app-name" });
+    this.titleEl = card.createEl("h2", { cls: "sg-title" });
+    const inputWrapper = card.createDiv("sg-input-wrapper");
+    this.inputEl = inputWrapper.createEl("input", {
+      type: "password",
+      cls: "sg-input",
+      attr: { placeholder: "Enter password" }
+    });
+    const eyeToggle = inputWrapper.createEl("button", { cls: "sg-eye-toggle" });
+    (0, import_obsidian3.setIcon)(eyeToggle, "eye");
+    eyeToggle.addEventListener("click", () => {
+      if (!this.inputEl)
+        return;
+      const isPassword = this.inputEl.type === "password";
+      this.inputEl.type = isPassword ? "text" : "password";
+      if (isPassword) {
+        (0, import_obsidian3.setIcon)(eyeToggle, "eye-off");
+      } else {
+        (0, import_obsidian3.setIcon)(eyeToggle, "eye");
+      }
+    });
+    this.hintEl = card.createDiv("sg-hint");
+    this.submitBtnEl = card.createEl("button", {
+      text: "Unlock",
+      cls: "mod-cta sg-submit-btn"
+    });
+    this.errorEl = card.createDiv("sg-error");
+    this.counterEl = card.createDiv("sg-counter");
+    this.lockoutEl = card.createDiv("sg-lockout");
+    this.recoveryBypassEl = card.createDiv("sg-recovery-bypass");
+    this.recoveryBypassEl.hide();
+    const recoveryLink = this.recoveryBypassEl.createEl("a", {
+      text: "Use Recovery Code",
+      cls: "sg-recovery-link"
+    });
+    recoveryLink.addEventListener("click", (e) => {
+      e.preventDefault();
+      this.openRecoveryBypassModal();
+    });
+    this.submitBtnEl.addEventListener("click", () => {
+      void this.submit();
+    });
+    this.containerEl.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+    });
+    activeDocument.body.appendChild(this.containerEl);
+    this.observer = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        if (mutation.type === "childList") {
+          const removedNodes = Array.from(mutation.removedNodes);
+          if (this.containerEl && removedNodes.includes(this.containerEl)) {
+            activeDocument.body.appendChild(this.containerEl);
+          }
+        }
       });
     });
-    new import_obsidian3.Setting(containerEl).setName("Master Password").setHeading();
-    const passwordSetting = new import_obsidian3.Setting(containerEl).setName("Password").setDesc("Used to unlock your vault and folders");
-    if (this.plugin.settings.passwordHash) {
-      passwordSetting.addButton(
-        (btn) => btn.setButtonText("Change Password").onClick(() => {
-          new PasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success, hash, salt) => {
-            void (async () => {
-              if (success && hash && salt) {
-                this.plugin.settings.passwordHash = hash;
-                this.plugin.settings.passwordSalt = salt;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        })
-      ).addButton((btn) => {
-        var _a;
-        btn.setButtonText("Remove");
-        const dBtn = btn;
-        if (typeof dBtn.setDestructive === "function") {
-          dBtn.setDestructive();
-        } else {
-          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
+    this.observer.observe(activeDocument.body, { childList: true });
+  }
+  handleKeydown(e) {
+    if (!this.containerEl || this.containerEl.hasClass("sg-overlay-hidden"))
+      return;
+    const keyLower = e.key.toLowerCase();
+    const isDevToolsShortcut = e.key === "F12" || (e.ctrlKey || e.metaKey) && e.shiftKey && ["i", "j", "c"].includes(keyLower) || (e.ctrlKey || e.metaKey) && e.altKey && ["i", "j", "c"].includes(keyLower) || (e.ctrlKey || e.metaKey) && ["r", "w"].includes(keyLower);
+    if (isDevToolsShortcut) {
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+    const isRecoveryModalOpen = !!activeDocument.querySelector(".sg-recovery-modal-container");
+    const recoveryModal = activeDocument.querySelector(".sg-recovery-modal-container");
+    const recoveryInput = recoveryModal == null ? void 0 : recoveryModal.querySelector("input");
+    const activeEl = activeDocument.activeElement;
+    const isFocusOnOurInput = activeEl === this.inputEl || recoveryInput && activeEl === recoveryInput;
+    const hasModifier = e.ctrlKey || e.metaKey || e.altKey;
+    if (hasModifier) {
+      const isEditingShortcut = !e.shiftKey && ["a", "c", "v", "x", "z", "y"].includes(keyLower);
+      if (isFocusOnOurInput && isEditingShortcut) {
+        return;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+    if (!isFocusOnOurInput) {
+      e.stopPropagation();
+      e.preventDefault();
+      if (isRecoveryModalOpen && recoveryInput) {
+        recoveryInput.focus();
+      } else if (this.inputEl) {
+        const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+        if (!isLockedOut) {
+          this.inputEl.focus();
         }
-        btn.onClick(() => {
-          new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success) => {
-            void (async () => {
-              if (success) {
-                this.plugin.settings.passwordHash = void 0;
-                this.plugin.settings.passwordSalt = void 0;
-                this.plugin.settings.enabled = false;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        });
-      });
+      }
+      return;
+    }
+    if (e.key === "Enter") {
+      if (isRecoveryModalOpen) {
+        return;
+      }
+      e.stopPropagation();
+      e.preventDefault();
+      void this.submit();
+      return;
+    }
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      e.preventDefault();
+      return;
+    }
+  }
+  handleFocus(e) {
+    if (!this.isVisible())
+      return;
+    const isRecoveryModalOpen = !!activeDocument.querySelector(".sg-recovery-modal-container");
+    const recoveryModal = activeDocument.querySelector(".sg-recovery-modal-container");
+    const recoveryInput = recoveryModal == null ? void 0 : recoveryModal.querySelector("input");
+    if (isRecoveryModalOpen && recoveryInput) {
+      if (e.target !== recoveryInput) {
+        e.stopPropagation();
+        recoveryInput.focus();
+      }
+    } else if (this.inputEl && e.target !== this.inputEl) {
+      const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+      if (!isLockedOut) {
+        e.stopPropagation();
+        this.inputEl.focus();
+      }
+    }
+  }
+  show(path, previousFile, callback) {
+    if (!this.containerEl)
+      return;
+    this.currentPath = path;
+    this.previousFile = previousFile;
+    this.currentCallback = callback;
+    if (this.settings.showStoneGateTitle) {
+      this.appNameEl.show();
+      this.appNameEl.textContent = this.settings.customTitle || "StoneGate";
     } else {
-      passwordSetting.addButton(
-        (btn) => btn.setButtonText("Set Password").setCta().onClick(() => {
-          new PasswordModal(this.app, this.plugin, void 0, void 0, "Master Password", (success, hash, salt) => {
-            void (async () => {
-              if (success && hash && salt) {
-                this.plugin.settings.passwordHash = hash;
-                this.plugin.settings.passwordSalt = salt;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        })
+      this.appNameEl.hide();
+    }
+    this.titleEl.textContent = `${path.label || path.path || "Vault"}`;
+    let hintText = "";
+    if (path.showHint && path.passwordHint) {
+      hintText = path.passwordHint;
+    } else if (!path.passwordHash && this.settings.showMasterHint && this.settings.passwordHint) {
+      hintText = this.settings.passwordHint;
+    }
+    this.hintEl.textContent = hintText;
+    this.containerEl.removeClass("sg-overlay-hidden");
+    this.containerEl.removeClass("sg-overlay-fade-out");
+    this.containerEl.addClass("sg-overlay-fade-in");
+    const disableWorkspacePointerEvents = () => {
+      const workspace = activeDocument.body.querySelector(".workspace");
+      if (workspace)
+        workspace.setCssStyles({ pointerEvents: "none" });
+    };
+    disableWorkspacePointerEvents();
+    if (!this.app.workspace.layoutReady) {
+      this.app.workspace.onLayoutReady(() => disableWorkspacePointerEvents());
+    }
+    window.addEventListener("keydown", this.boundHandleKeydown, { capture: true });
+    activeDocument.addEventListener("focus", this.boundHandleFocus, true);
+    window.addEventListener("focus", this.boundHandleWindowFocus);
+    if (!this.lockScope) {
+      this.lockScope = new import_obsidian3.Scope();
+    }
+    if (!this.scopeActive) {
+      this.app.keymap.pushScope(this.lockScope);
+      this.scopeActive = true;
+    }
+    if (this.app.workspace.layoutReady) {
+      this.applyBackgroundStyles();
+    } else {
+      this.app.workspace.onLayoutReady(() => {
+        this.applyBackgroundStyles();
+      });
+    }
+    if (this.inputEl) {
+      this.inputEl.value = "";
+      this.errorEl.textContent = "";
+      this.updateLockoutUI();
+      if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
+        this.startLockoutTimer();
+      } else {
+        window.setTimeout(() => {
+          var _a;
+          return (_a = this.inputEl) == null ? void 0 : _a.focus();
+        }, 50);
+      }
+    }
+  }
+  isVisible() {
+    return !!this.containerEl && !this.containerEl.hasClass("sg-overlay-hidden");
+  }
+  hide() {
+    if (!this.containerEl)
+      return;
+    this.containerEl.removeClass("sg-overlay-fade-in");
+    this.containerEl.addClass("sg-overlay-fade-out");
+    window.setTimeout(() => {
+      if (this.containerEl) {
+        this.containerEl.addClass("sg-overlay-hidden");
+      }
+      const restoreWorkspacePointerEvents = () => {
+        const workspace = activeDocument.body.querySelector(".workspace");
+        if (workspace)
+          workspace.setCssStyles({ pointerEvents: "" });
+      };
+      restoreWorkspacePointerEvents();
+      if (!this.app.workspace.layoutReady) {
+        this.app.workspace.onLayoutReady(() => restoreWorkspacePointerEvents());
+      }
+      window.removeEventListener("keydown", this.boundHandleKeydown, { capture: true });
+      activeDocument.removeEventListener("focus", this.boundHandleFocus, true);
+      window.removeEventListener("focus", this.boundHandleWindowFocus);
+      if (this.lockScope && this.scopeActive) {
+        this.app.keymap.popScope(this.lockScope);
+        this.scopeActive = false;
+      }
+    }, 300);
+  }
+  async handleSuccessfulUnlock() {
+    if (this.settings.intruderAlert && this.settings.totalIntruderAttempts > 0) {
+      new import_obsidian3.Notice(
+        `\u{1F6A8} Security Alert: ${this.settings.totalIntruderAttempts} failed unlock attempt(s) detected.`,
+        1e4
       );
     }
-    new import_obsidian3.Setting(containerEl).setName("Protected Paths").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Add Protected Path").setDesc("Select a folder to protect.").addButton(
-      (btn) => btn.setButtonText("Add Path").setCta().onClick(() => {
-        new AddPathModal(this.app, this.plugin, () => this.display()).open();
-      })
-    );
-    const pathsContainer = containerEl.createDiv();
-    for (const path of this.plugin.settings.protectedPaths) {
-      new import_obsidian3.Setting(pathsContainer).setName(path.path === "/" || path.path === "" ? "Vault" : path.path).setDesc(`${path.label ? path.label + " | " : ""}${path.timeoutMinutes} min timeout${path.passwordHash ? " | \u{1F511} Has own password" : ""}`).addButton(
-        (btn) => btn.setButtonText("Edit").onClick(() => {
-          new EditPathModal(this.app, this.plugin, path, () => this.display()).open();
-        })
-      ).addButton(
-        (btn) => btn.setButtonText("Remove").onClick(async () => {
-          this.plugin.settings.protectedPaths = this.plugin.settings.protectedPaths.filter((p) => p.id !== path.id);
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
+    this.settings.failedAttempts = 0;
+    this.settings.totalIntruderAttempts = 0;
+    this.settings.lockoutUntil = 0;
+    await this.saveSettings();
+    this.updateLockoutUI();
+    this.hide();
+    if (this.currentCallback)
+      this.currentCallback(true);
+  }
+  async submit() {
+    var _a, _b;
+    const hash = ((_a = this.currentPath) == null ? void 0 : _a.passwordHash) || this.settings.passwordHash;
+    const salt = ((_b = this.currentPath) == null ? void 0 : _b.passwordSalt) || this.settings.passwordSalt;
+    if (!this.inputEl || !hash || !salt) {
+      this.hide();
+      if (this.currentCallback)
+        this.currentCallback(true);
+      return;
     }
-    new import_obsidian3.Setting(containerEl).setName("Behavior").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Lock on Startup").setDesc("Require password immediately when opening Obsidian").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.lockOnStartup).onChange((value) => {
-        this.plugin.settings.lockOnStartup = value;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Lock when Obsidian loses focus").setDesc("Lock immediately when the window loses focus").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.lockOnBlur).onChange((value) => {
-        this.plugin.settings.lockOnBlur = value;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Blur Grace Period (seconds)").setDesc("Time in seconds to wait before locking after focus loss (0 = immediate)").addText(
-      (text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.blurGracePeriodSeconds)).onChange((value) => {
-        const num = parseInt(value, 10);
-        if (!isNaN(num) && num >= 0) {
-          this.plugin.settings.blurGracePeriodSeconds = num;
-          void this.plugin.saveSettings();
-        }
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Max Failed Attempts").setDesc("0 = unlimited").addText(
-      (text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.maxFailedAttempts)).onChange((value) => {
-        const num = parseInt(value, 10);
-        if (!isNaN(num) && num >= 0) {
-          this.plugin.settings.maxFailedAttempts = num;
-          void this.plugin.saveSettings();
-        }
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Lockout Duration (seconds)").addText(
-      (text) => text.setPlaceholder("60").setValue(String(this.plugin.settings.lockoutDurationSeconds)).onChange((value) => {
-        const num = parseInt(value, 10);
-        if (!isNaN(num) && num >= 0) {
-          this.plugin.settings.lockoutDurationSeconds = num;
-          void this.plugin.saveSettings();
-        }
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Intruder Alert").setDesc("Show a notice upon unlocking if there were failed attempts").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.intruderAlert).onChange((value) => {
-        this.plugin.settings.intruderAlert = value;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Appearance").setHeading();
-    new import_obsidian3.Setting(containerEl).setName("Show StoneGate Title").setDesc("Show the 'StoneGate' app name at the top of the lock screen").addToggle(
-      (toggle) => toggle.setValue(this.plugin.settings.showStoneGateTitle).onChange((value) => {
-        this.plugin.settings.showStoneGateTitle = value;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Custom Lock Screen Title").setDesc("Custom text to show at the top of the lock screen (defaults to 'StoneGate')").addText(
-      (text) => text.setPlaceholder("StoneGate").setValue(this.plugin.settings.customTitle || "").onChange((value) => {
-        this.plugin.settings.customTitle = value.trim() || void 0;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Custom Background URL/Path").setDesc("URL or local path to a custom background image. You can use an external URL (http/https), or a local file from the vault (simply type the file name or use the path in the vault).").addText((text) => {
-      text.setPlaceholder("https://example.com/image.jpg").setValue(this.plugin.settings.customBackgroundUrl || "").onChange((value) => {
-        this.plugin.settings.customBackgroundUrl = value.trim();
-        void this.plugin.saveSettings();
-      });
-      new ImagePathSuggest(this.app, text.inputEl);
-    });
-    new import_obsidian3.Setting(containerEl).setName("Ghost Mode & Commands").setHeading();
-    const unlockMenuPwdSetting = new import_obsidian3.Setting(containerEl).setName("Unlock Menu Access Password").setDesc("Used to access the command palette list of hidden/locked paths");
-    if (this.plugin.settings.unlockMenuPasswordHash) {
-      unlockMenuPwdSetting.addButton(
-        (btn) => btn.setButtonText("Change Password").onClick(() => {
-          new PasswordModal(this.app, this.plugin, this.plugin.settings.unlockMenuPasswordHash, this.plugin.settings.unlockMenuPasswordSalt, "Unlock Menu Password", (success, hash, salt) => {
-            void (async () => {
-              if (success && hash && salt) {
-                this.plugin.settings.unlockMenuPasswordHash = hash;
-                this.plugin.settings.unlockMenuPasswordSalt = salt;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        })
-      ).addButton((btn) => {
-        var _a;
-        btn.setButtonText("Remove");
-        const dBtn = btn;
-        if (typeof dBtn.setDestructive === "function") {
-          dBtn.setDestructive();
-        } else {
-          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
-        }
-        btn.onClick(() => {
-          new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.unlockMenuPasswordHash, this.plugin.settings.unlockMenuPasswordSalt, "Unlock Menu Password", (success) => {
-            void (async () => {
-              if (success) {
-                this.plugin.settings.unlockMenuPasswordHash = void 0;
-                this.plugin.settings.unlockMenuPasswordSalt = void 0;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        });
-      });
-    } else {
-      unlockMenuPwdSetting.addButton(
-        (btn) => btn.setButtonText("Set Password").setCta().onClick(() => {
-          new PasswordModal(this.app, this.plugin, void 0, void 0, "Unlock Menu Password", (success, hash, salt) => {
-            void (async () => {
-              if (success && hash && salt) {
-                this.plugin.settings.unlockMenuPasswordHash = hash;
-                this.plugin.settings.unlockMenuPasswordSalt = salt;
-                await this.plugin.saveSettings();
-                this.display();
-              }
-            })();
-          }).open();
-        })
-      );
+    if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
+      return;
     }
-    new import_obsidian3.Setting(containerEl).setName("Unlock Menu Password Hint").setDesc("Hint shown when the Unlock Menu password is requested").addText(
-      (text) => text.setPlaceholder("Hint or custom message...").setValue(this.plugin.settings.unlockMenuPasswordHint || "").onChange((value) => {
-        this.plugin.settings.unlockMenuPasswordHint = value.trim() || void 0;
-        void this.plugin.saveSettings();
-      })
-    );
-    new import_obsidian3.Setting(containerEl).setName("Security").setHeading();
-    const recoverySetting = new import_obsidian3.Setting(containerEl).setName("Recovery Code (Global Skeleton Key)").setDesc("A 6-character recovery code that can bypass and unlock any path if you forget your password.");
-    if (this.plugin.settings.recoveryCodeHash) {
-      recoverySetting.setDesc("A recovery code is configured. You can use it to bypass lock screens. (For security, only the hash is stored; the code cannot be shown again).").addButton((btn) => {
-        var _a;
-        btn.setButtonText("Remove Recovery Code");
-        const dBtn = btn;
-        if (typeof dBtn.setDestructive === "function") {
-          dBtn.setDestructive();
-        } else {
-          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
-        }
-        btn.onClick(() => {
-          new ConfirmPasswordModal(
-            this.app,
-            this.plugin,
-            void 0,
-            void 0,
-            "Master Password",
-            (success) => {
-              void (async () => {
-                if (success) {
-                  this.plugin.settings.recoveryCodeHash = void 0;
-                  this.plugin.settings.recoveryCodeSalt = void 0;
-                  await this.plugin.saveSettings();
-                  this.display();
-                  new import_obsidian3.Notice("Recovery Code removed successfully.");
-                }
-              })();
-            }
-          ).open();
-        });
-      });
+    const guess = this.inputEl.value;
+    this.inputEl.value = "";
+    let isMatch = await verifyPassword(guess, hash, salt);
+    if (!isMatch && this.settings.recoveryCodeHash && this.settings.recoveryCodeSalt) {
+      const upperGuess = guess.trim().toUpperCase();
+      isMatch = await verifyPassword(upperGuess, this.settings.recoveryCodeHash, this.settings.recoveryCodeSalt);
+      if (isMatch) {
+        new import_obsidian3.Notice("\u{1F513} Unlocked using Recovery Code (Global Skeleton Key).", 5e3);
+      }
+    }
+    if (isMatch) {
+      await this.handleSuccessfulUnlock();
     } else {
-      recoverySetting.addButton(
-        (btn) => btn.setButtonText("Generate Recovery Code").setCta().onClick(() => {
-          new ConfirmPasswordModal(
-            this.app,
-            this.plugin,
-            void 0,
-            void 0,
-            "Master Password",
-            (success) => {
-              void (async () => {
-                if (success) {
-                  const code = generateRecoveryCode();
-                  const saltBytes = generateSalt();
-                  const hash = await hashPassword(code.toUpperCase(), saltBytes);
-                  this.plugin.settings.recoveryCodeHash = hash;
-                  this.plugin.settings.recoveryCodeSalt = uint8ArrayToBase64(saltBytes);
-                  await this.plugin.saveSettings();
-                  this.display();
-                  new RecoveryCodeDisplayModal(this.app, code).open();
-                }
-              })();
-            }
-          ).open();
-        })
-      );
+      this.settings.failedAttempts++;
+      this.settings.totalIntruderAttempts++;
+      this.errorEl.textContent = "Incorrect password";
+      this.inputEl.classList.remove("sg-shake");
+      void this.inputEl.offsetWidth;
+      this.inputEl.classList.add("sg-shake");
+      if (this.settings.maxFailedAttempts > 0 && this.settings.failedAttempts >= this.settings.maxFailedAttempts) {
+        this.settings.lockoutUntil = Date.now() + this.settings.lockoutDurationSeconds * 1e3;
+        this.settings.failedAttempts = 0;
+        await this.saveSettings();
+        this.updateLockoutUI();
+        this.startLockoutTimer();
+      } else {
+        await this.saveSettings();
+        this.updateLockoutUI();
+      }
+    }
+  }
+  openRecoveryBypassModal() {
+    if (this.isRecoveryPromptOpen)
+      return;
+    if (!this.settings.recoveryCodeHash || !this.settings.recoveryCodeSalt) {
+      new import_obsidian3.Notice("No Recovery Code is configured. Set one up in StoneGate settings.", 6e3);
+      return;
+    }
+    this.isRecoveryPromptOpen = true;
+    new RecoveryBypassModal(this.app, this.settings, (verified) => {
+      void (async () => {
+        if (verified) {
+          new import_obsidian3.Notice("\u{1F513} Lockout bypassed using Recovery Code.", 5e3);
+          await this.handleSuccessfulUnlock();
+        }
+      })();
+    }, () => {
+      this.isRecoveryPromptOpen = false;
+    }).open();
+  }
+  updateLockoutUI() {
+    const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+    if (isLockedOut) {
+      this.inputEl.disabled = true;
+      this.submitBtnEl.disabled = true;
+      this.errorEl.textContent = "";
+      this.counterEl.textContent = "";
+      const secondsLeft = Math.ceil((this.settings.lockoutUntil - Date.now()) / 1e3);
+      this.lockoutEl.textContent = `Locked out for ${secondsLeft} seconds`;
+      if (this.settings.recoveryCodeHash) {
+        this.recoveryBypassEl.show();
+      }
+    } else {
+      if (this.settings.lockoutUntil !== 0) {
+        this.settings.lockoutUntil = 0;
+        void this.saveSettings().catch((err) => console.error("StoneGate: failed to save lockout settings", err));
+      }
+      this.inputEl.disabled = false;
+      this.submitBtnEl.disabled = false;
+      this.lockoutEl.textContent = "";
+      this.recoveryBypassEl.hide();
+      if (this.settings.maxFailedAttempts > 0 && this.settings.failedAttempts > 0) {
+        this.counterEl.textContent = `${this.settings.failedAttempts} / ${this.settings.maxFailedAttempts} attempts`;
+      } else {
+        this.counterEl.textContent = "";
+      }
+    }
+  }
+  startLockoutTimer() {
+    if (this.lockoutTimer !== null) {
+      window.clearInterval(this.lockoutTimer);
+    }
+    this.lockoutTimer = window.setInterval(() => {
+      if (this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil) {
+        this.updateLockoutUI();
+      } else {
+        window.clearInterval(this.lockoutTimer);
+        this.lockoutTimer = null;
+        this.updateLockoutUI();
+        if (this.inputEl && !this.containerEl.hasClass("sg-overlay-hidden")) {
+          this.inputEl.focus();
+        }
+      }
+    }, 1e3);
+  }
+  dispose() {
+    if (this.observer) {
+      this.observer.disconnect();
+    }
+    if (this.lockoutTimer !== null) {
+      window.clearInterval(this.lockoutTimer);
+    }
+    window.removeEventListener("keydown", this.boundHandleKeydown, { capture: true });
+    window.removeEventListener("focus", this.boundHandleWindowFocus);
+    activeDocument.removeEventListener("focus", this.boundHandleFocus, true);
+    if (this.lockScope && this.scopeActive) {
+      this.app.keymap.popScope(this.lockScope);
+      this.scopeActive = false;
+    }
+    if (this.containerEl && this.containerEl.parentNode) {
+      this.containerEl.parentNode.removeChild(this.containerEl);
     }
   }
 };
+
+// src/settings/settings-tab.ts
+var import_obsidian7 = require("obsidian");
+
+// src/ui/modals/password-modal.ts
+var import_obsidian4 = require("obsidian");
 function createInputWithEye(container, placeholder) {
   const wrapper = container.createDiv("sg-modal-input-container");
   const input = wrapper.createEl("input", { type: "password", attr: { placeholder } });
   const eyeBtn = wrapper.createEl("button", { cls: "sg-eye-toggle" });
-  (0, import_obsidian3.setIcon)(eyeBtn, "eye");
+  (0, import_obsidian4.setIcon)(eyeBtn, "eye");
   eyeBtn.addEventListener("click", () => {
     const isPassword = input.type === "password";
     input.type = isPassword ? "text" : "password";
     if (isPassword) {
-      (0, import_obsidian3.setIcon)(eyeBtn, "eye-off");
+      (0, import_obsidian4.setIcon)(eyeBtn, "eye-off");
     } else {
-      (0, import_obsidian3.setIcon)(eyeBtn, "eye");
+      (0, import_obsidian4.setIcon)(eyeBtn, "eye");
     }
   });
   return input;
 }
-var PasswordModal = class extends import_obsidian3.Modal {
+var PasswordModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, targetHash, targetSalt, targetName, onSubmit) {
     super(app);
     this.plugin = plugin;
@@ -1410,7 +1217,7 @@ var PasswordModal = class extends import_obsidian3.Modal {
     this.onSubmit(false);
   }
 };
-var ConfirmPasswordModal = class extends import_obsidian3.Modal {
+var ConfirmPasswordModal = class extends import_obsidian4.Modal {
   constructor(app, plugin, targetHash, targetSalt, targetName, onSubmit, hint) {
     super(app);
     this.plugin = plugin;
@@ -1468,48 +1275,10 @@ var ConfirmPasswordModal = class extends import_obsidian3.Modal {
     this.onSubmit(false);
   }
 };
-var RecoveryCodeDisplayModal = class extends import_obsidian3.Modal {
-  constructor(app, code) {
-    super(app);
-    this.code = code;
-  }
-  onOpen() {
-    const { contentEl } = this;
-    contentEl.empty();
-    contentEl.createEl("h2", { text: "\u{1F511} Secure Recovery Code Generated", cls: "sg-modal-title" });
-    const desc = contentEl.createEl("p", {
-      text: "This recovery code acts as a Global Skeleton Key. It can bypass and unlock any locked folder or the vault itself if you forget your password.",
-      cls: "sg-modal-desc"
-    });
-    desc.addClass("sg-display-desc");
-    const warningBox = contentEl.createDiv("sg-warning-box sg-display-warning-box");
-    warningBox.createEl("strong", { text: "\u26A0\uFE0F IMPORTANT WARNING:", cls: "sg-display-warning-title" });
-    warningBox.createEl("span", {
-      text: "Write this code down or save it in a secure password manager. For security reasons, the code is hashed before saving, and it CANNOT be shown or recovered again once you close this window.",
-      cls: "sg-display-warning-text"
-    });
-    const codeContainer = contentEl.createDiv("sg-recovery-code-container sg-display-code-container");
-    codeContainer.createEl("div", { text: this.code, cls: "sg-display-code-el" });
-    const buttonRow = contentEl.createDiv("sg-button-row sg-display-button-row");
-    const copyBtn = buttonRow.createEl("button", { text: "Copy Code", cls: "mod-cta" });
-    copyBtn.addEventListener("click", () => {
-      void (async () => {
-        await navigator.clipboard.writeText(this.code);
-        new import_obsidian3.Notice("Recovery code copied to clipboard!");
-        copyBtn.setText("Copied!");
-        window.setTimeout(() => copyBtn.setText("Copy Code"), 2e3);
-      })();
-    });
-    const closeBtn = buttonRow.createEl("button", { text: "Done / I Saved It" });
-    closeBtn.addEventListener("click", () => {
-      this.close();
-    });
-  }
-  onClose() {
-    this.contentEl.empty();
-  }
-};
-var AddPathModal = class extends import_obsidian3.Modal {
+
+// src/ui/modals/path-modals.ts
+var import_obsidian5 = require("obsidian");
+var AddPathModal = class extends import_obsidian5.Modal {
   constructor(app, plugin, onSubmit) {
     super(app);
     this.plugin = plugin;
@@ -1520,30 +1289,88 @@ var AddPathModal = class extends import_obsidian3.Modal {
     contentEl.empty();
     contentEl.createEl("h2", { text: "Add Protected Path" });
     const pathWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
-    pathWrapper.createEl("label", { text: "Folder path (e.g. Secret/ or / for entire vault)" });
+    pathWrapper.createEl("label", { text: "Folder or file path (e.g. Secret/, Notes/todo.md, or / for entire vault)" });
     const pathInput = pathWrapper.createEl("input", { type: "text", attr: { placeholder: "Path..." } });
     const dropdown = pathWrapper.createDiv("sg-autocomplete-dropdown");
     dropdown.hide();
-    const folders = this.app.vault.getAllFolders().map((f) => f.path);
-    folders.unshift("/");
+    const allEntries = [
+      { path: "/", type: "vault" },
+      ...this.app.vault.getAllFolders().map((f) => ({ path: f.path, type: "folder" })),
+      ...this.app.vault.getFiles().map((f) => ({ path: f.path, type: "file" }))
+    ];
+    let selectedIndex = -1;
+    let currentMatches = [];
+    let items = [];
+    let applyHighlight = () => {
+    };
     const updateDropdown = () => {
       dropdown.empty();
-      const query = pathInput.value.toLowerCase();
-      const matches = folders.filter((f) => f.toLowerCase().includes(query)).slice(0, 8);
-      if (matches.length > 0 && query.length > 0) {
+      items = [];
+      const rawQuery = pathInput.value.toLowerCase().trim();
+      const query = rawQuery.replace(/^\/+/, "");
+      const matches = allEntries.filter((entry) => {
+        const searchableText = entry.path === "/" ? "vault /" : entry.path.toLowerCase();
+        return searchableText.includes(query) || rawQuery.length > 0 && searchableText.includes(rawQuery);
+      }).slice(0, 8);
+      currentMatches = matches;
+      selectedIndex = matches.length > 0 ? 0 : -1;
+      if (matches.length > 0 && rawQuery.length > 0) {
         dropdown.show();
         for (const match of matches) {
-          const item = dropdown.createDiv({ cls: "sg-autocomplete-item", text: match === "/" ? "Vault (/)" : match });
+          const item = dropdown.createDiv({ cls: "sg-autocomplete-item" });
+          const iconSpan = item.createSpan({ cls: "sg-path-type-icon" });
+          (0, import_obsidian5.setIcon)(iconSpan, match.type === "vault" ? "home" : match.type === "folder" ? "folder" : "file");
+          item.createSpan({ text: match.path === "/" ? "Vault (/)" : match.path });
           item.addEventListener("click", () => {
-            pathInput.value = match;
+            pathInput.value = match.path;
             dropdown.hide();
+            currentMatches = [];
+            selectedIndex = -1;
           });
+          items.push(item);
         }
+        applyHighlight = () => {
+          items.forEach((el, i) => el.toggleClass("sg-autocomplete-item-active", i === selectedIndex));
+        };
+        applyHighlight();
       } else {
         dropdown.hide();
+        currentMatches = [];
+        selectedIndex = -1;
       }
     };
     pathInput.addEventListener("input", updateDropdown);
+    pathInput.addEventListener("keydown", (e) => {
+      var _a, _b;
+      const isDropdownVisible = dropdown.style.display !== "none" && currentMatches.length > 0;
+      if (isDropdownVisible && e.key === "ArrowDown") {
+        e.preventDefault();
+        selectedIndex = Math.min(selectedIndex + 1, currentMatches.length - 1);
+        applyHighlight();
+        (_a = items[selectedIndex]) == null ? void 0 : _a.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (isDropdownVisible && e.key === "ArrowUp") {
+        e.preventDefault();
+        selectedIndex = Math.max(selectedIndex - 1, 0);
+        applyHighlight();
+        (_b = items[selectedIndex]) == null ? void 0 : _b.scrollIntoView({ block: "nearest" });
+        return;
+      }
+      if (isDropdownVisible && e.key === "Enter" && selectedIndex >= 0) {
+        e.preventDefault();
+        const chosen = currentMatches[selectedIndex];
+        pathInput.value = chosen.path;
+        dropdown.hide();
+        currentMatches = [];
+        selectedIndex = -1;
+        return;
+      }
+      if (e.key === "Enter") {
+        e.preventDefault();
+        void submit();
+      }
+    });
     const labelWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
     labelWrapper.createEl("label", { text: "Friendly Label (optional)" });
     const labelInput = labelWrapper.createEl("input", { type: "text", attr: { placeholder: "My Secrets" } });
@@ -1551,13 +1378,6 @@ var AddPathModal = class extends import_obsidian3.Modal {
     timeoutWrapper.createEl("label", { text: "Timeout in Minutes (decimals allowed, e.g., 0.5 = 30s)" });
     const timeoutInput = timeoutWrapper.createEl("input", { type: "number", attr: { placeholder: "Minutes (e.g. 0.5 = 30s, 3 = 3min)", step: "any" } });
     timeoutInput.value = "3";
-    const hintWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
-    hintWrapper.createEl("label", { text: "Password Hint (optional)" });
-    const hintInput = hintWrapper.createEl("input", { type: "text", attr: { placeholder: "Hint or custom message..." } });
-    const toggleWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
-    const showHintToggle = toggleWrapper.createEl("input", { type: "checkbox" });
-    const showHintLabel = toggleWrapper.createEl("span", { text: "Show hint on lock screen" });
-    showHintLabel.addEventListener("click", () => showHintToggle.click());
     const ghostWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
     const ghostToggle = ghostWrapper.createEl("input", { type: "checkbox" });
     const ghostLabel = ghostWrapper.createEl("span", { text: "Enable Ghost Mode (Hide this path from File Explorer)" });
@@ -1594,6 +1414,13 @@ var AddPathModal = class extends import_obsidian3.Modal {
         }
       }).open();
     });
+    const hintWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
+    hintWrapper.createEl("label", { text: "Password Hint (optional)" });
+    const hintInput = hintWrapper.createEl("input", { type: "text", attr: { placeholder: "Hint or custom message..." } });
+    const toggleWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
+    const showHintToggle = toggleWrapper.createEl("input", { type: "checkbox" });
+    const showHintLabel = toggleWrapper.createEl("span", { text: "Show hint on lock screen" });
+    showHintLabel.addEventListener("click", () => showHintToggle.click());
     const errorEl = contentEl.createDiv("sg-error");
     const submitBtn = contentEl.createEl("button", { text: "Add", cls: "mod-cta sg-modal-submit-btn" });
     const submit = async () => {
@@ -1638,21 +1465,27 @@ var AddPathModal = class extends import_obsidian3.Modal {
         void submit();
       }
     };
-    pathInput.addEventListener("keydown", handleKey);
     labelInput.addEventListener("keydown", handleKey);
     timeoutInput.addEventListener("keydown", handleKey);
-    activeDocument.addEventListener("click", (e) => {
+    this.handleOutsideClick = (e) => {
       if (!pathWrapper.contains(e.target)) {
         dropdown.hide();
+        currentMatches = [];
+        selectedIndex = -1;
       }
-    });
+    };
+    activeDocument.addEventListener("click", this.handleOutsideClick);
     window.setTimeout(() => pathInput.focus(), 50);
   }
   onClose() {
+    if (this.handleOutsideClick) {
+      activeDocument.removeEventListener("click", this.handleOutsideClick);
+      this.handleOutsideClick = void 0;
+    }
     this.contentEl.empty();
   }
 };
-var EditPathModal = class extends import_obsidian3.Modal {
+var EditPathModal = class extends import_obsidian5.Modal {
   constructor(app, plugin, pathObj, onSubmit) {
     super(app);
     this.plugin = plugin;
@@ -1663,7 +1496,14 @@ var EditPathModal = class extends import_obsidian3.Modal {
     const { contentEl } = this;
     contentEl.empty();
     contentEl.createEl("h2", { text: "Edit Protected Path" });
-    contentEl.createEl("p", { text: `Path: ${this.pathObj.path === "/" ? "Vault (/)" : this.pathObj.path}` });
+    const isRoot = this.pathObj.path === "/" || this.pathObj.path === "";
+    const abstractFile = isRoot ? null : this.app.vault.getAbstractFileByPath(this.pathObj.path);
+    const iconName = isRoot ? "home" : abstractFile instanceof import_obsidian5.TFolder ? "folder" : abstractFile instanceof import_obsidian5.TFile ? "file" : "help-circle";
+    const pathLine = contentEl.createEl("p");
+    pathLine.createSpan({ text: "Path: " });
+    const iconSpan = pathLine.createSpan({ cls: "sg-path-type-icon" });
+    (0, import_obsidian5.setIcon)(iconSpan, iconName);
+    pathLine.createSpan({ text: isRoot ? "Vault (/)" : this.pathObj.path });
     const labelWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
     labelWrapper.createEl("label", { text: "Friendly Label" });
     const labelInput = labelWrapper.createEl("input", { type: "text", attr: { placeholder: "Label" } });
@@ -1672,15 +1512,6 @@ var EditPathModal = class extends import_obsidian3.Modal {
     timeoutWrapper.createEl("label", { text: "Timeout in Minutes (decimals allowed, e.g., 0.5 = 30s)" });
     const timeoutInput = timeoutWrapper.createEl("input", { type: "number", attr: { placeholder: "Minutes", step: "any" } });
     timeoutInput.value = String(this.pathObj.timeoutMinutes);
-    const hintWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
-    hintWrapper.createEl("label", { text: "Password Hint" });
-    const hintInput = hintWrapper.createEl("input", { type: "text", attr: { placeholder: "Hint or custom message..." } });
-    hintInput.value = this.pathObj.passwordHint || "";
-    const toggleWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
-    const showHintToggle = toggleWrapper.createEl("input", { type: "checkbox" });
-    showHintToggle.checked = this.pathObj.showHint;
-    const showHintLabel = toggleWrapper.createEl("span", { text: "Show hint on lock screen" });
-    showHintLabel.addEventListener("click", () => showHintToggle.click());
     const ghostWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
     const ghostToggle = ghostWrapper.createEl("input", { type: "checkbox" });
     ghostToggle.checked = !!this.pathObj.enableGhostMode;
@@ -1742,6 +1573,15 @@ var EditPathModal = class extends import_obsidian3.Modal {
         }).open();
       });
     }
+    const hintWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-small-margin" });
+    hintWrapper.createEl("label", { text: "Password Hint" });
+    const hintInput = hintWrapper.createEl("input", { type: "text", attr: { placeholder: "Hint or custom message..." } });
+    hintInput.value = this.pathObj.passwordHint || "";
+    const toggleWrapper = contentEl.createDiv({ cls: "sg-modal-input-container sg-flex-row" });
+    const showHintToggle = toggleWrapper.createEl("input", { type: "checkbox" });
+    showHintToggle.checked = this.pathObj.showHint;
+    const showHintLabel = toggleWrapper.createEl("span", { text: "Show hint on lock screen" });
+    showHintLabel.addEventListener("click", () => showHintToggle.click());
     const errorEl = contentEl.createDiv("sg-error");
     const controls = contentEl.createDiv("sg-modal-button-row-right");
     const submitBtn = controls.createEl("button", { text: "Save", cls: "mod-cta" });
@@ -1784,7 +1624,10 @@ var EditPathModal = class extends import_obsidian3.Modal {
     this.contentEl.empty();
   }
 };
-var ImagePathSuggest = class extends import_obsidian3.AbstractInputSuggest {
+
+// src/ui/suggests/image-suggest.ts
+var import_obsidian6 = require("obsidian");
+var ImagePathSuggest = class extends import_obsidian6.AbstractInputSuggest {
   constructor(app, inputEl) {
     super(app, inputEl);
     this.inputEl = inputEl;
@@ -1810,9 +1653,373 @@ var ImagePathSuggest = class extends import_obsidian3.AbstractInputSuggest {
   }
 };
 
-// src/unlock-path-modal.ts
-var import_obsidian4 = require("obsidian");
-var UnlockPathModal = class extends import_obsidian4.FuzzySuggestModal {
+// src/settings/settings-tab.ts
+var StoneGateSettingTab = class extends import_obsidian7.PluginSettingTab {
+  constructor(app, plugin) {
+    super(app, plugin);
+    this.plugin = plugin;
+  }
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    new import_obsidian7.Setting(containerEl).setName("Core").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Enable StoneGate").setDesc("Turn on lock screen protection").addToggle((toggle) => {
+      let isSyncing = false;
+      toggle.setValue(this.plugin.settings.enabled).onChange((value) => {
+        void (async () => {
+          if (isSyncing)
+            return;
+          try {
+            if (value) {
+              if (!this.plugin.settings.passwordHash) {
+                isSyncing = true;
+                toggle.setValue(false);
+                isSyncing = false;
+                new PasswordModal(this.app, this.plugin, void 0, void 0, "Master Password", (success, hash, salt) => {
+                  void (async () => {
+                    try {
+                      if (success && hash && salt) {
+                        this.plugin.settings.passwordHash = hash;
+                        this.plugin.settings.passwordSalt = salt;
+                        this.plugin.settings.enabled = true;
+                        await this.plugin.saveSettings();
+                        this.display();
+                      } else {
+                        isSyncing = true;
+                        toggle.setValue(false);
+                        isSyncing = false;
+                      }
+                    } catch (e) {
+                      console.error("Password modal callback error:", e);
+                    }
+                  })();
+                }).open();
+              } else {
+                this.plugin.settings.enabled = true;
+                await this.plugin.saveSettings();
+              }
+            } else {
+              isSyncing = true;
+              toggle.setValue(true);
+              isSyncing = false;
+              new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success) => {
+                void (async () => {
+                  try {
+                    if (success) {
+                      this.plugin.settings.enabled = false;
+                      await this.plugin.saveSettings();
+                      this.plugin.lockManager.lockAll();
+                      this.display();
+                    } else {
+                      isSyncing = true;
+                      toggle.setValue(true);
+                      isSyncing = false;
+                    }
+                  } catch (e) {
+                    console.error("Confirm password modal callback error:", e);
+                  }
+                })();
+              }).open();
+            }
+          } catch (e) {
+            console.error("Failed to toggle StoneGate:", e);
+            isSyncing = true;
+            toggle.setValue(!value);
+            isSyncing = false;
+          }
+        })();
+      });
+    });
+    new import_obsidian7.Setting(containerEl).setName("Master Password").setHeading();
+    const passwordSetting = new import_obsidian7.Setting(containerEl).setName("Password").setDesc("Used to unlock your vault and folders");
+    if (this.plugin.settings.passwordHash) {
+      passwordSetting.addButton(
+        (btn) => btn.setButtonText("Change Password").onClick(() => {
+          new PasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success, hash, salt) => {
+            void (async () => {
+              if (success && hash && salt) {
+                this.plugin.settings.passwordHash = hash;
+                this.plugin.settings.passwordSalt = salt;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        })
+      ).addButton((btn) => {
+        var _a;
+        btn.setButtonText("Remove");
+        const dBtn = btn;
+        if (typeof dBtn.setDestructive === "function") {
+          dBtn.setDestructive();
+        } else {
+          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
+        }
+        btn.onClick(() => {
+          new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.passwordHash, this.plugin.settings.passwordSalt, "Master Password", (success) => {
+            void (async () => {
+              if (success) {
+                this.plugin.settings.passwordHash = void 0;
+                this.plugin.settings.passwordSalt = void 0;
+                this.plugin.settings.enabled = false;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        });
+      });
+    } else {
+      passwordSetting.addButton(
+        (btn) => btn.setButtonText("Set Password").setCta().onClick(() => {
+          new PasswordModal(this.app, this.plugin, void 0, void 0, "Master Password", (success, hash, salt) => {
+            void (async () => {
+              if (success && hash && salt) {
+                this.plugin.settings.passwordHash = hash;
+                this.plugin.settings.passwordSalt = salt;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        })
+      );
+    }
+    new import_obsidian7.Setting(containerEl).setName("Protected Paths").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Add Protected Path").setDesc("Select a folder, file, or the whole vault to protect.").addButton(
+      (btn) => btn.setButtonText("Add Path").setCta().onClick(() => {
+        new AddPathModal(this.app, this.plugin, () => this.display()).open();
+      })
+    );
+    const pathsContainer = containerEl.createDiv();
+    for (const path of this.plugin.settings.protectedPaths) {
+      const isRoot = path.path === "/" || path.path === "";
+      const abstractFile = isRoot ? null : this.app.vault.getAbstractFileByPath(path.path);
+      const iconName = isRoot ? "home" : abstractFile instanceof import_obsidian7.TFolder ? "folder" : abstractFile instanceof import_obsidian7.TFile ? "file" : "help-circle";
+      const setting = new import_obsidian7.Setting(pathsContainer);
+      setting.nameEl.empty();
+      const iconSpan = setting.nameEl.createSpan({ cls: "sg-path-type-icon" });
+      (0, import_obsidian7.setIcon)(iconSpan, iconName);
+      setting.nameEl.createSpan({ text: isRoot ? "Vault" : path.path });
+      setting.setDesc(`${path.label ? path.label + " | " : ""}${path.timeoutMinutes} min timeout${path.passwordHash ? " | \u{1F511} Has own password" : ""}`).addButton(
+        (btn) => btn.setButtonText("Edit").onClick(() => {
+          new EditPathModal(this.app, this.plugin, path, () => this.display()).open();
+        })
+      ).addButton(
+        (btn) => btn.setButtonText("Remove").onClick(async () => {
+          this.plugin.settings.protectedPaths = this.plugin.settings.protectedPaths.filter((p) => p.id !== path.id);
+          await this.plugin.saveSettings();
+          this.display();
+        })
+      );
+    }
+    new import_obsidian7.Setting(containerEl).setName("Behavior").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Lock on Startup").setDesc("Require password immediately when opening Obsidian").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.lockOnStartup).onChange((value) => {
+        this.plugin.settings.lockOnStartup = value;
+        void this.plugin.saveSettings();
+      })
+    );
+    const blurDesc = new DocumentFragment();
+    blurDesc.createSpan({ text: "Lock immediately when the window loses focus." });
+    blurDesc.createEl("br");
+    blurDesc.createSpan({
+      text: "Note: opening another app (including screenshot tools) also counts as losing focus, so with this enabled \u2014 especially with a Blur Grace Period of 0 \u2014 taking a screenshot can immediately lock your vault."
+    });
+    new import_obsidian7.Setting(containerEl).setName("Lock when Obsidian loses focus").setDesc(blurDesc).addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.lockOnBlur).onChange((value) => {
+        this.plugin.settings.lockOnBlur = value;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Blur Grace Period (seconds)").setDesc("Time in seconds to wait before locking after focus loss (0 = immediate)").addText(
+      (text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.blurGracePeriodSeconds)).onChange((value) => {
+        const num = parseInt(value, 10);
+        if (!isNaN(num) && num >= 0) {
+          this.plugin.settings.blurGracePeriodSeconds = num;
+          void this.plugin.saveSettings();
+        }
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Max Failed Attempts").setDesc("0 = unlimited").addText(
+      (text) => text.setPlaceholder("3").setValue(String(this.plugin.settings.maxFailedAttempts)).onChange((value) => {
+        const num = parseInt(value, 10);
+        if (!isNaN(num) && num >= 0) {
+          this.plugin.settings.maxFailedAttempts = num;
+          void this.plugin.saveSettings();
+        }
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Lockout Duration (seconds)").addText(
+      (text) => text.setPlaceholder("60").setValue(String(this.plugin.settings.lockoutDurationSeconds)).onChange((value) => {
+        const num = parseInt(value, 10);
+        if (!isNaN(num) && num >= 0) {
+          this.plugin.settings.lockoutDurationSeconds = num;
+          void this.plugin.saveSettings();
+        }
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Intruder Alert").setDesc("Show a notice upon unlocking if there were failed attempts").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.intruderAlert).onChange((value) => {
+        this.plugin.settings.intruderAlert = value;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Ghost Mode & Commands").setHeading();
+    const unlockMenuPwdSetting = new import_obsidian7.Setting(containerEl).setName("Unlock Menu Access Password").setDesc("Used to access the command palette list of hidden/locked paths");
+    if (this.plugin.settings.unlockMenuPasswordHash) {
+      unlockMenuPwdSetting.addButton(
+        (btn) => btn.setButtonText("Change Password").onClick(() => {
+          new PasswordModal(this.app, this.plugin, this.plugin.settings.unlockMenuPasswordHash, this.plugin.settings.unlockMenuPasswordSalt, "Unlock Menu Password", (success, hash, salt) => {
+            void (async () => {
+              if (success && hash && salt) {
+                this.plugin.settings.unlockMenuPasswordHash = hash;
+                this.plugin.settings.unlockMenuPasswordSalt = salt;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        })
+      ).addButton((btn) => {
+        var _a;
+        btn.setButtonText("Remove");
+        const dBtn = btn;
+        if (typeof dBtn.setDestructive === "function") {
+          dBtn.setDestructive();
+        } else {
+          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
+        }
+        btn.onClick(() => {
+          new ConfirmPasswordModal(this.app, this.plugin, this.plugin.settings.unlockMenuPasswordHash, this.plugin.settings.unlockMenuPasswordSalt, "Unlock Menu Password", (success) => {
+            void (async () => {
+              if (success) {
+                this.plugin.settings.unlockMenuPasswordHash = void 0;
+                this.plugin.settings.unlockMenuPasswordSalt = void 0;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        });
+      });
+    } else {
+      unlockMenuPwdSetting.addButton(
+        (btn) => btn.setButtonText("Set Password").setCta().onClick(() => {
+          new PasswordModal(this.app, this.plugin, void 0, void 0, "Unlock Menu Password", (success, hash, salt) => {
+            void (async () => {
+              if (success && hash && salt) {
+                this.plugin.settings.unlockMenuPasswordHash = hash;
+                this.plugin.settings.unlockMenuPasswordSalt = salt;
+                await this.plugin.saveSettings();
+                this.display();
+              }
+            })();
+          }).open();
+        })
+      );
+    }
+    new import_obsidian7.Setting(containerEl).setName("Unlock Menu Password Hint").setDesc("Hint shown when the Unlock Menu password is requested").addText(
+      (text) => text.setPlaceholder("Hint or custom message...").setValue(this.plugin.settings.unlockMenuPasswordHint || "").onChange((value) => {
+        this.plugin.settings.unlockMenuPasswordHint = value.trim() || void 0;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Security").setHeading();
+    const recoverySetting = new import_obsidian7.Setting(containerEl).setName("Recovery Code (Global Skeleton Key)").setDesc("A 6-character recovery code that can bypass and unlock any path if you forget your password.");
+    if (this.plugin.settings.recoveryCodeHash) {
+      recoverySetting.setDesc("A recovery code is configured. You can use it to bypass lock screens. (For security, only the hash is stored; the code cannot be shown again).").addButton((btn) => {
+        var _a;
+        btn.setButtonText("Remove Recovery Code");
+        const dBtn = btn;
+        if (typeof dBtn.setDestructive === "function") {
+          dBtn.setDestructive();
+        } else {
+          (_a = dBtn["setWarning"]) == null ? void 0 : _a.call(dBtn);
+        }
+        btn.onClick(() => {
+          new ConfirmPasswordModal(
+            this.app,
+            this.plugin,
+            void 0,
+            void 0,
+            "Master Password",
+            (success) => {
+              void (async () => {
+                if (success) {
+                  this.plugin.settings.recoveryCodeHash = void 0;
+                  this.plugin.settings.recoveryCodeSalt = void 0;
+                  await this.plugin.saveSettings();
+                  this.display();
+                  new import_obsidian7.Notice("Recovery Code removed successfully.");
+                }
+              })();
+            }
+          ).open();
+        });
+      });
+    } else {
+      recoverySetting.addButton(
+        (btn) => btn.setButtonText("Generate Recovery Code").setCta().onClick(() => {
+          new ConfirmPasswordModal(
+            this.app,
+            this.plugin,
+            void 0,
+            void 0,
+            "Master Password",
+            (success) => {
+              void (async () => {
+                if (success) {
+                  const code = generateRecoveryCode();
+                  const saltBytes = generateSalt();
+                  const hash = await hashPassword(code.toUpperCase(), saltBytes);
+                  this.plugin.settings.recoveryCodeHash = hash;
+                  this.plugin.settings.recoveryCodeSalt = uint8ArrayToBase64(saltBytes);
+                  await this.plugin.saveSettings();
+                  this.display();
+                  new RecoveryCodeDisplayModal(this.app, code).open();
+                }
+              })();
+            }
+          ).open();
+        })
+      );
+    }
+    new import_obsidian7.Setting(containerEl).setName("Appearance").setHeading();
+    new import_obsidian7.Setting(containerEl).setName("Show StoneGate Title").setDesc("Show the 'StoneGate' app name at the top of the lock screen").addToggle(
+      (toggle) => toggle.setValue(this.plugin.settings.showStoneGateTitle).onChange((value) => {
+        this.plugin.settings.showStoneGateTitle = value;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Custom Lock Screen Title").setDesc("Custom text to show at the top of the lock screen (defaults to 'StoneGate')").addText(
+      (text) => text.setPlaceholder("StoneGate").setValue(this.plugin.settings.customTitle || "").onChange((value) => {
+        this.plugin.settings.customTitle = value.trim() || void 0;
+        void this.plugin.saveSettings();
+      })
+    );
+    new import_obsidian7.Setting(containerEl).setName("Custom Background URL/Path").setDesc("URL or local path to a custom background image. You can use an external URL (http/https), or a local file from the vault (simply type the file name or use the path in the vault).").addText((text) => {
+      text.setPlaceholder("https://example.com/image.jpg").setValue(this.plugin.settings.customBackgroundUrl || "").onChange((value) => {
+        this.plugin.settings.customBackgroundUrl = value.trim();
+        void this.plugin.saveSettings();
+      });
+      new ImagePathSuggest(this.app, text.inputEl);
+    });
+    new import_obsidian7.Setting(containerEl).setName("Background Blur Amount").setDesc("How blurred the custom background image appears on the lock screen (min 2px, max 10px).").addSlider(
+      (slider) => {
+        var _a;
+        return slider.setLimits(2, 10, 1).setValue((_a = this.plugin.settings.customBackgroundBlurPx) != null ? _a : 10).setDynamicTooltip().onChange((value) => {
+          this.plugin.settings.customBackgroundBlurPx = value;
+          void this.plugin.saveSettings();
+        });
+      }
+    );
+  }
+};
+
+// src/ui/modals/unlock-path-modal.ts
+var import_obsidian8 = require("obsidian");
+var UnlockPathModal = class extends import_obsidian8.FuzzySuggestModal {
   constructor(app, plugin) {
     super(app);
     this.plugin = plugin;
@@ -1832,7 +2039,7 @@ var UnlockPathModal = class extends import_obsidian4.FuzzySuggestModal {
 };
 
 // src/main.ts
-var StoneGatePlugin = class extends import_obsidian5.Plugin {
+var StoneGatePlugin = class extends import_obsidian9.Plugin {
   constructor() {
     super(...arguments);
     this.currentFilePath = null;
@@ -1843,27 +2050,30 @@ var StoneGatePlugin = class extends import_obsidian5.Plugin {
       await this.saveSettings();
     });
     this.lockManager = new LockManager(this.app, this.settings, this.overlay);
-    const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
-    if (isLockedOut) {
-      const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
-      if (defaultPath) {
-        this.lockManager.lockAll();
-        this.overlay.show(defaultPath, null, (success) => {
-          if (success) {
-            this.lockManager.unlock(defaultPath.id);
-          }
-        });
+    const runStartupLockChecks = () => {
+      const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+      if (isLockedOut) {
+        const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
+        if (defaultPath) {
+          this.lockManager.lockAll();
+          this.overlay.show(defaultPath, null, (success) => {
+            if (success) {
+              this.lockManager.handleUnlockSuccess(defaultPath.id);
+            }
+          });
+        }
+      } else if (this.settings.enabled && this.settings.lockOnStartup) {
+        const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
+        if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
+          this.overlay.show(defaultPath, null, (success) => {
+            if (success) {
+              this.lockManager.handleUnlockSuccess(defaultPath.id);
+            }
+          });
+        }
       }
-    } else if (this.settings.enabled && this.settings.lockOnStartup) {
-      const defaultPath = this.settings.protectedPaths.find((p) => p.id === "default" || p.path === "/");
-      if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
-        this.overlay.show(defaultPath, null, (success) => {
-          if (success) {
-            this.lockManager.unlock(defaultPath.id);
-          }
-        });
-      }
-    }
+    };
+    runStartupLockChecks();
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", () => {
         const file = this.app.workspace.getActiveFile();
@@ -1886,7 +2096,7 @@ var StoneGatePlugin = class extends import_obsidian5.Plugin {
             this.lockManager.lockAll();
             this.overlay.show(defaultPath, this.lockManager.getPreviousFile(), (success) => {
               if (success) {
-                this.lockManager.unlock(defaultPath.id);
+                this.lockManager.handleUnlockSuccess(defaultPath.id);
               }
             });
           }

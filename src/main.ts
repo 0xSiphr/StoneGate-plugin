@@ -1,10 +1,11 @@
 import { Plugin } from "obsidian";
 import { StoneGateSettings } from "./types";
 import { DEFAULT_SETTINGS } from "./constants";
-import { LockManager } from "./lock-manager";
+import { LockManager } from "./managers/lock-manager";
 import { LockOverlay } from "./overlay";
-import { StoneGateSettingTab, ConfirmPasswordModal } from "./settings";
-import { UnlockPathModal } from "./unlock-path-modal";
+import { StoneGateSettingTab } from "./settings/settings-tab";
+import { ConfirmPasswordModal } from "./ui/modals/password-modal";
+import { UnlockPathModal } from "./ui/modals/unlock-path-modal";
 
 export default class StoneGatePlugin extends Plugin {
   settings!: StoneGateSettings;
@@ -21,27 +22,31 @@ export default class StoneGatePlugin extends Plugin {
     });
     this.lockManager = new LockManager(this.app, this.settings, this.overlay);
 
-    const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
-    if (isLockedOut) {
-      const defaultPath = this.settings.protectedPaths.find(p => p.id === "default" || p.path === "/");
-      if (defaultPath) {
-        this.lockManager.lockAll();
-        this.overlay.show(defaultPath, null, (success) => {
-          if (success) {
-            this.lockManager.unlock(defaultPath.id);
-          }
-        });
+    const runStartupLockChecks = () => {
+      const isLockedOut = this.settings.lockoutUntil && Date.now() < this.settings.lockoutUntil;
+      if (isLockedOut) {
+        const defaultPath = this.settings.protectedPaths.find(p => p.id === "default" || p.path === "/");
+        if (defaultPath) {
+          this.lockManager.lockAll();
+          this.overlay.show(defaultPath, null, (success) => {
+            if (success) {
+              this.lockManager.handleUnlockSuccess(defaultPath.id);
+            }
+          });
+        }
+      } else if (this.settings.enabled && this.settings.lockOnStartup) {
+        const defaultPath = this.settings.protectedPaths.find(p => p.id === "default" || p.path === "/");
+        if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
+          this.overlay.show(defaultPath, null, (success) => {
+            if (success) {
+              this.lockManager.handleUnlockSuccess(defaultPath.id);
+            }
+          });
+        }
       }
-    } else if (this.settings.enabled && this.settings.lockOnStartup) {
-      const defaultPath = this.settings.protectedPaths.find(p => p.id === "default" || p.path === "/");
-      if (defaultPath && (defaultPath.passwordHash || this.settings.passwordHash)) {
-        this.overlay.show(defaultPath, null, (success) => {
-          if (success) {
-            this.lockManager.unlock(defaultPath.id);
-          }
-        });
-      }
-    }
+    };
+
+    runStartupLockChecks();
 
     // Watch for file open events
     this.registerEvent(
@@ -70,7 +75,7 @@ export default class StoneGatePlugin extends Plugin {
             this.lockManager.lockAll();
             this.overlay.show(defaultPath, this.lockManager.getPreviousFile(), (success) => {
               if (success) {
-                this.lockManager.unlock(defaultPath.id);
+                this.lockManager.handleUnlockSuccess(defaultPath.id);
               }
             });
           }

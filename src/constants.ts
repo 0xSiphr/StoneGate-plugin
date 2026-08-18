@@ -34,4 +34,5 @@ export const DEFAULT_SETTINGS: StoneGateSettings = {
   unlockMenuPasswordSalt: undefined,
   unlockMenuPasswordHint: undefined,
   customBackgroundUrl: "",
+  customBackgroundBlurPx: 10,
 };

@@ -36,4 +36,24 @@ export interface StoneGateSettings {
   unlockMenuPasswordSalt?: string;
   unlockMenuPasswordHint?: string;
   customBackgroundUrl: string;
+  customBackgroundBlurPx: number;
 }
+
+export type LockScreenSettings = Pick<StoneGateSettings,
+  | "customBackgroundUrl"
+  | "customBackgroundBlurPx"
+  | "showStoneGateTitle"
+  | "customTitle"
+  | "showMasterHint"
+  | "passwordHint"
+  | "passwordHash"
+  | "passwordSalt"
+  | "lockoutUntil"
+  | "recoveryCodeHash"
+  | "recoveryCodeSalt"
+  | "failedAttempts"
+  | "totalIntruderAttempts"
+  | "maxFailedAttempts"
+  | "lockoutDurationSeconds"
+  | "intruderAlert"
+>;
